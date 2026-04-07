@@ -15,54 +15,54 @@ A centralized log aggregation system that collects logs from multiple services, 
 ---
 
 ## 📂 Project Structure
-
-log-aggregation-system/
-├── log-dashboard-frontend/        # Frontend dashboard (HTML + TS + CSS)
-│   ├── components/                # UI components (TS)
-│   │   ├── alertsPanel.ts
-│   │   ├── filters.ts
-│   │   ├── logTable.ts
-│   │   └── metricsCards.ts
-│   │
-│   ├── css/                       # Styles and animations
-│   │   ├── animations.css
-│   │   └── styles.css
-│   │
-│   ├── ts/                        # Core frontend logic
-│   │   ├── api.ts
-│   │   ├── charts.ts
-│   │   ├── dashboard.ts
-│   │   ├── realtime.ts
-│   │   ├── types.ts
-│   │   └── utils.ts
-│   │
-│   ├── dist/                      # Compiled JS output
-│   │   ├── components/
-│   │   └── ts/
-│   │
-│   ├── index.html
-│   ├── package.json
-│   └── tsconfig.json
-│
-├── logcontroller/                 # Backend (Spring MVC)
-│   ├── src/main/java/com/kovanlabs/logcontroller/
-│   │   ├── config/                # Security & config classes
-│   │   ├── consumer/              # Kafka consumers
-│   │   ├── controller/            # REST APIs
-│   │   ├── model/                 # Data models
-│   │   ├── parser/                # Log parsing logic
-│   │   ├── repository/            # Elasticsearch integration
-│   │   └── service/               # Business logic
-│   │
-│   ├── pom.xml
-│   └── target/
-│
-├── kafka/                         # Kafka setup (local)
-├── filebeat/                      # Filebeat configuration
-├── logs/                          # Log files from services
-│
-├── .gitignore
-└── README.md
+    
+    log-aggregation-system/
+    ├── log-dashboard-frontend/        # Frontend dashboard (HTML + TS + CSS)
+    │   ├── components/                # UI components (TS)
+    │   │   ├── alertsPanel.ts
+    │   │   ├── filters.ts
+    │   │   ├── logTable.ts
+    │   │   └── metricsCards.ts
+    │   │
+    │   ├── css/                       # Styles and animations
+    │   │   ├── animations.css
+    │   │   └── styles.css
+    │   │
+    │   ├── ts/                        # Core frontend logic
+    │   │   ├── api.ts
+    │   │   ├── charts.ts
+    │   │   ├── dashboard.ts
+    │   │   ├── realtime.ts
+    │   │   ├── types.ts
+    │   │   └── utils.ts
+    │   │
+    │   ├── dist/                      # Compiled JS output
+    │   │   ├── components/
+    │   │   └── ts/
+    │   │
+    │   ├── index.html
+    │   ├── package.json
+    │   └── tsconfig.json
+    │
+    ├── logcontroller/                 # Backend (Spring MVC)
+    │   ├── src/main/java/com/kovanlabs/logcontroller/
+    │   │   ├── config/                # Security & config classes
+    │   │   ├── consumer/              # Kafka consumers
+    │   │   ├── controller/            # REST APIs
+    │   │   ├── model/                 # Data models
+    │   │   ├── parser/                # Log parsing logic
+    │   │   ├── repository/            # Elasticsearch integration
+    │   │   └── service/               # Business logic
+    │   │
+    │   ├── pom.xml
+    │   └── target/
+    │
+    ├── kafka/                         # Kafka setup (local)
+    ├── filebeat/                      # Filebeat configuration
+    ├── logs/                          # Log files from services
+    │
+    ├── .gitignore
+    └── README.md
 ---
 
 ##  Prerequisites
