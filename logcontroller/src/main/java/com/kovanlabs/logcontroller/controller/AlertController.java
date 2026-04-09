@@ -1,6 +1,8 @@
 package com.kovanlabs.logcontroller.controller;
 
 import com.kovanlabs.logcontroller.model.Alert;
+import com.kovanlabs.logcontroller.auth.AuthRequestContext;
+import com.kovanlabs.logcontroller.auth.AuthenticatedUserContext;
 import com.kovanlabs.logcontroller.service.AlertService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.CrossOrigin;
@@ -15,6 +17,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import jakarta.servlet.http.HttpServletRequest;
+
 @RestController
 @CrossOrigin(origins = "http://localhost:3000", allowedHeaders = "*", methods = {RequestMethod.GET, RequestMethod.OPTIONS})
 @RequestMapping("/alerts")
@@ -26,8 +30,11 @@ public class AlertController {
     private AlertService alertService;
 
     @GetMapping
-    public Map<String, List<Map<String, Object>>> getAlerts() {
+    public Map<String, List<Map<String, Object>>> getAlerts(HttpServletRequest request) {
+        AuthenticatedUserContext context = AuthRequestContext.getRequired(request);
+
         return alertService.getRecentAlertsGroupedByService().entrySet().stream()
+                .filter(entry -> context.isAdmin() || context.isServiceAllowed(entry.getKey()))
                 .collect(Collectors.toMap(
                         Map.Entry::getKey,
                         entry -> entry.getValue().stream().map(this::toResponse).collect(Collectors.toList()),

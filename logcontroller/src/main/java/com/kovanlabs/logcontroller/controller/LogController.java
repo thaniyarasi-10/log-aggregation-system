@@ -1,6 +1,7 @@
 package com.kovanlabs.logcontroller.controller;
 
 import java.util.List;
+import java.util.Map;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -14,9 +15,13 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kovanlabs.logcontroller.auth.AuthRequestContext;
+import com.kovanlabs.logcontroller.auth.AuthenticatedUserContext;
 import com.kovanlabs.logcontroller.model.LogEvent;
 import com.kovanlabs.logcontroller.repository.ElasticRepository;
 import com.kovanlabs.logcontroller.service.LogProcessingService;
+
+import jakarta.servlet.http.HttpServletRequest;
 @RestController
 @CrossOrigin(origins = "http://localhost:3000", allowedHeaders = "*", methods = {RequestMethod.GET, RequestMethod.POST, RequestMethod.OPTIONS})
 @RequestMapping("/logs")
@@ -62,15 +67,43 @@ public class LogController {
     @GetMapping
     public ResponseEntity<List<LogEvent>> search(
             @RequestParam(value = "service", required = false) String service,
+            @RequestParam(value = "environment", required = false) String environment,
             @RequestParam(value = "level", required = false) String level,
+            @RequestParam(value = "traceId", required = false) String traceId,
+            @RequestParam(value = "message", required = false) String message,
             @RequestParam(value = "from", required = false) String from,
             @RequestParam(value = "to", required = false) String to,
             @RequestParam(value = "page", defaultValue = "0") int page,
-            @RequestParam(value = "size", defaultValue = "20") int size
+            @RequestParam(value = "size", defaultValue = "20") int size,
+            HttpServletRequest request
     ) {
+        AuthenticatedUserContext context = AuthRequestContext.getRequired(request);
         List<LogEvent> logs =
-                elasticRepository.search(service, level, from, to, page, size);
+                elasticRepository.search(service, environment, level, traceId, message, from, to, page, size, context);
 
         return ResponseEntity.ok(logs);
+    }
+
+    @GetMapping("/services")
+    public ResponseEntity<List<String>> services(
+            @RequestParam(value = "from", required = false) String from,
+            @RequestParam(value = "to", required = false) String to,
+            @RequestParam(value = "size", defaultValue = "200") int size,
+            HttpServletRequest request
+    ) {
+        AuthenticatedUserContext context = AuthRequestContext.getRequired(request);
+        return ResponseEntity.ok(elasticRepository.getDistinctServices(from, to, size, context));
+    }
+
+    @GetMapping("/metrics")
+    public ResponseEntity<Map<String, Object>> metrics(
+            @RequestParam(value = "service", required = false) String service,
+            @RequestParam(value = "from", required = false) String from,
+            @RequestParam(value = "to", required = false) String to,
+            @RequestParam(value = "timePreset", required = false) String timePreset,
+            HttpServletRequest request
+    ) {
+        AuthenticatedUserContext context = AuthRequestContext.getRequired(request);
+        return ResponseEntity.ok(elasticRepository.getMetrics(service, from, to, timePreset, context));
     }
 }

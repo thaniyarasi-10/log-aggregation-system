@@ -14,6 +14,10 @@ export class LogTable {
         this.autoScroll = value;
     }
     renderLogs(newLogs) {
+        const firstRow = this.container.firstElementChild;
+        if (firstRow && firstRow.classList.contains('empty-state-row')) {
+            this.container.innerHTML = '';
+        }
         const fragment = document.createDocumentFragment();
         newLogs.forEach(log => {
             if (this.logs.length >= this.maxLogs) {
@@ -36,6 +40,16 @@ export class LogTable {
     clearLogs() {
         this.logs = [];
         this.container.innerHTML = '';
+    }
+    showEmptyState(message) {
+        this.logs = [];
+        this.container.innerHTML = `
+            <tr class="empty-state-row">
+                <td colspan="6" style="padding: 1rem; text-align: center; color: var(--text-secondary);">
+                    ${escapeHtml(message)}
+                </td>
+            </tr>
+        `;
     }
     createRow(log) {
         const tr = document.createElement('tr');

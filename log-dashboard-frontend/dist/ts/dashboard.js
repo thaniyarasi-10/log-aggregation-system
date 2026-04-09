@@ -13,6 +13,38 @@ document.addEventListener('DOMContentLoaded', () => {
     // Accumulator for overall metrics
     const allLogs = [];
     let refreshGeneration = 0;
+    let serviceRefreshTimer = null;
+    let metricsRefreshTimer = null;
+    let tableRefreshTimer = null;
+    const syncServices = async () => {
+        const services = await ApiClient.fetchServices({ size: 5000 });
+        if (services.length > 0) {
+            filters.setAvailableServices(services);
+        }
+    };
+    const buildMetricsFilters = (selectedFilters) => {
+        const metricFilters = {
+            size: 500
+        };
+        if (selectedFilters.service) {
+            metricFilters.service = selectedFilters.service;
+        }
+        if (selectedFilters.from) {
+            metricFilters.from = selectedFilters.from;
+        }
+        if (selectedFilters.to) {
+            metricFilters.to = selectedFilters.to;
+        }
+        if (selectedFilters.timePreset) {
+            metricFilters.timePreset = selectedFilters.timePreset;
+        }
+        return metricFilters;
+    };
+    const refreshMetrics = async (selectedFilters) => {
+        const metricData = await ApiClient.fetchMetrics(buildMetricsFilters(selectedFilters));
+        metrics.update(metricData);
+        charts.renderMetrics(metricData);
+    };
     let realtime;
     const filters = new Filters((opts) => {
         if (realtime) {
@@ -28,12 +60,8 @@ document.addEventListener('DOMContentLoaded', () => {
         newLogs.forEach(l => allLogs.push(l));
         if (allLogs.length > 2000)
             allLogs.splice(0, allLogs.length - 2000); // keep a rolling window for metrics
-        metrics.update(allLogs);
         if (isBulk) {
-            charts.updateBulk(newLogs);
-        }
-        else {
-            charts.update(newLogs, allLogs);
+            void refreshMetrics(filters.getCurrentFilters());
         }
     });
     // Fetch User Profile removed since it was causing loading issue
@@ -77,12 +105,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 contextContent.innerHTML = 'Loading context...';
                 try {
                     const logTime = new Date(log.timestamp).getTime();
-                    const from = new Date(logTime - 5 * 60 * 1000).toISOString();
-                    const to = new Date(logTime + 5 * 60 * 1000).toISOString();
+                    const from = new Date(logTime - 2 * 60 * 1000).toISOString();
+                    const to = new Date(logTime + 2 * 60 * 1000).toISOString();
                     const contextLogs = await ApiClient.fetchLogs({
                         service: log.service,
+                        traceId: log.traceId,
                         from: from,
-                        to: to
+                        to: to,
+                        size: 200
                     });
                     if (contextLogs.length === 0) {
                         contextContent.innerHTML = 'No context logs found.';
@@ -124,7 +154,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const generation = refreshGeneration;
         allLogs.length = 0;
         logTable.clearLogs();
-        metrics.update([]);
+        metrics.update({
+            totalLogs: 0,
+            errorCount: 0,
+            errorRate: 0,
+            avgResponseTime: 0,
+            p95Latency: 0,
+            bucketInterval: '1m',
+            throughputOverTime: [],
+            levelDistribution: []
+        });
         charts.clear();
         realtime.setFilters(selectedFilters, { resetCursor: true, immediateFetch: false });
         const initialLogs = await ApiClient.fetchLogs({
@@ -136,6 +175,9 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         if (!initialLogs.length) {
+            logTable.showEmptyState('No logs found for the selected service and time range.');
+            await syncServices();
+            await refreshMetrics(selectedFilters);
             return;
         }
         const normalizedInitialLogs = initialLogs.map(log => {
@@ -156,8 +198,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (allLogs.length > 2000) {
             allLogs.splice(0, allLogs.length - 2000);
         }
-        metrics.update(allLogs);
-        charts.updateBulk(normalizedInitialLogs);
+        await syncServices();
+        await refreshMetrics(selectedFilters);
         realtime.seedCursorFromLogs(normalizedInitialLogs);
     };
     // Theme Toggling logic
@@ -202,8 +244,29 @@ document.addEventListener('DOMContentLoaded', () => {
             oauthOverlay.style.display = 'none';
             appContainer.style.display = 'flex';
             logoutBtn.style.display = 'block';
+            // Populate service options immediately from full historical data.
+            await syncServices();
             // Always bootstrap from persisted Elasticsearch logs before live polling.
             await refreshDashboardData(filters.getCurrentFilters());
+            if (serviceRefreshTimer !== null) {
+                globalThis.clearInterval(serviceRefreshTimer);
+            }
+            serviceRefreshTimer = globalThis.setInterval(() => {
+                void syncServices();
+            }, 10000);
+            if (metricsRefreshTimer !== null) {
+                globalThis.clearInterval(metricsRefreshTimer);
+            }
+            metricsRefreshTimer = globalThis.setInterval(() => {
+                void refreshMetrics(filters.getCurrentFilters());
+            }, 3000);
+            if (tableRefreshTimer !== null) {
+                globalThis.clearInterval(tableRefreshTimer);
+            }
+            tableRefreshTimer = globalThis.setInterval(() => {
+                // Periodic full refresh keeps table accurate for non-realtime/backfilled systems.
+                void refreshDashboardData(filters.getCurrentFilters());
+            }, 30000);
             realtime.startPooling(2000);
             alertsPanel.start(5000);
         }
@@ -213,6 +276,18 @@ document.addEventListener('DOMContentLoaded', () => {
             oauthOverlay.style.display = 'flex';
             appContainer.style.display = 'none';
             logoutBtn.style.display = 'none';
+            if (serviceRefreshTimer !== null) {
+                globalThis.clearInterval(serviceRefreshTimer);
+                serviceRefreshTimer = null;
+            }
+            if (metricsRefreshTimer !== null) {
+                globalThis.clearInterval(metricsRefreshTimer);
+                metricsRefreshTimer = null;
+            }
+            if (tableRefreshTimer !== null) {
+                globalThis.clearInterval(tableRefreshTimer);
+                tableRefreshTimer = null;
+            }
             alertsPanel.stop();
         }
     };

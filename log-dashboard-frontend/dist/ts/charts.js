@@ -35,17 +35,17 @@ export class DashboardCharts {
         this.errorRateChart = createChart('errorRateChart', {
             type: 'line',
             data: { labels: [], datasets: [{ label: 'Error Rate (%)', data: [], borderColor: '#ef4444', tension: 0.4 }] },
-            options: { responsive: true, maintainAspectRatio: false }
+            options: this.buildTimeChartOptions()
         });
         this.responseTimeChart = createChart('responseTimeChart', {
             type: 'bar',
             data: { labels: [], datasets: [{ label: 'Response Time (ms)', data: [], backgroundColor: '#3b82f6' }] },
-            options: { responsive: true, maintainAspectRatio: false }
+            options: this.buildTimeChartOptions()
         });
         this.throughputChart = createChart('throughputChart', {
             type: 'line',
             data: { labels: [], datasets: [{ label: 'Logs/sec', data: [], borderColor: '#10b981', backgroundColor: 'rgba(16, 185, 129, 0.2)', fill: true, tension: 0.4 }] },
-            options: { responsive: true, maintainAspectRatio: false }
+            options: this.buildTimeChartOptions()
         });
         this.errorDistributionChart = createChart('errorDistributionChart', {
             type: 'doughnut',
@@ -65,6 +65,42 @@ export class DashboardCharts {
         if (this.errorDistributionChart) {
             this.errorDistributionChart.data.labels = [];
             this.errorDistributionChart.data.datasets[0].data = [];
+            this.errorDistributionChart.update('none');
+        }
+    }
+    renderMetrics(metrics) {
+        const sortedTimeline = [...(metrics.throughputOverTime || [])]
+            .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+        const rangeMs = this.getRangeMs(sortedTimeline.map(point => point.time));
+        const xAxisLabels = sortedTimeline.map(point => this.formatAxisTimestamp(point.time, rangeMs));
+        const fullTimestamps = sortedTimeline.map(point => this.formatTooltipTimestamp(point.time));
+        if (this.errorRateChart) {
+            this.errorRateChart.data.labels = xAxisLabels;
+            this.errorRateChart.data.datasets[0].data = sortedTimeline.map(point => Number(point.errorRate) || 0);
+            this.errorRateChart.$fullTimestamps = fullTimestamps;
+            this.ensureChartWidth(this.errorRateChart, xAxisLabels.length);
+            this.errorRateChart.update('none');
+        }
+        if (this.responseTimeChart) {
+            this.responseTimeChart.data.labels = xAxisLabels;
+            this.responseTimeChart.data.datasets[0].data = sortedTimeline.map(point => Number(point.avgResponseTime) || 0);
+            this.responseTimeChart.$fullTimestamps = fullTimestamps;
+            this.ensureChartWidth(this.responseTimeChart, xAxisLabels.length);
+            this.responseTimeChart.update('none');
+        }
+        if (this.throughputChart) {
+            this.throughputChart.data.labels = xAxisLabels;
+            this.throughputChart.data.datasets[0].data = sortedTimeline.map(point => Number(point.throughputPerSecond) || 0);
+            this.throughputChart.$fullTimestamps = fullTimestamps;
+            this.ensureChartWidth(this.throughputChart, xAxisLabels.length);
+            this.throughputChart.update('none');
+        }
+        if (this.errorDistributionChart) {
+            const dist = [...(metrics.levelDistribution || [])]
+                .filter(item => item && item.level)
+                .sort((a, b) => b.count - a.count);
+            this.errorDistributionChart.data.labels = dist.map(item => `${item.level} (${item.count})`);
+            this.errorDistributionChart.data.datasets[0].data = dist.map(item => item.count);
             this.errorDistributionChart.update('none');
         }
     }
@@ -201,5 +237,95 @@ export class DashboardCharts {
     getCssVar(name, fallback) {
         const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
         return value || fallback;
+    }
+    buildTimeChartOptions() {
+        return {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    ticks: {
+                        maxRotation: 0,
+                        autoSkip: true,
+                        maxTicksLimit: 12
+                    }
+                }
+            },
+            plugins: {
+                tooltip: {
+                    callbacks: {
+                        title: (items) => this.getTooltipTitle(items)
+                    }
+                }
+            }
+        };
+    }
+    ensureChartWidth(chart, points) {
+        const canvas = chart?.canvas;
+        if (!canvas) {
+            return;
+        }
+        // Keep charts anchored to container width to avoid corner rendering and horizontal overflow bars.
+        canvas.style.minWidth = '0';
+        canvas.style.width = '100%';
+    }
+    getRangeMs(timestamps) {
+        if (timestamps.length < 2) {
+            return 0;
+        }
+        const first = new Date(timestamps[0]).getTime();
+        const last = new Date(timestamps[timestamps.length - 1]).getTime();
+        if (!Number.isFinite(first) || !Number.isFinite(last)) {
+            return 0;
+        }
+        return Math.max(0, last - first);
+    }
+    getTooltipTitle(items) {
+        if (!items || !items.length) {
+            return '';
+        }
+        const chart = items[0].chart;
+        const idx = items[0].dataIndex;
+        const full = chart?.$fullTimestamps;
+        if (Array.isArray(full) && typeof full[idx] === 'string') {
+            return full[idx];
+        }
+        return String(items[0].label || '');
+    }
+    formatAxisTimestamp(timestamp, rangeMs) {
+        const date = new Date(timestamp);
+        if (!Number.isFinite(date.getTime())) {
+            return timestamp;
+        }
+        if (rangeMs <= 24 * 60 * 60 * 1000) {
+            return date.toLocaleTimeString(undefined, {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false
+            });
+        }
+        return date.toLocaleString(undefined, {
+            day: '2-digit',
+            month: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+        }).replace(',', '');
+    }
+    formatTooltipTimestamp(timestamp) {
+        const date = new Date(timestamp);
+        if (!Number.isFinite(date.getTime())) {
+            return timestamp;
+        }
+        return date.toLocaleString(undefined, {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
+        }).replace(',', '');
     }
 }

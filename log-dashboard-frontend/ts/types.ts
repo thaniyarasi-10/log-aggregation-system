@@ -30,6 +30,32 @@ export interface Metrics {
     p95Latency: number;
 }
 
+export interface MetricsTimeBucket {
+    time: string;
+    count: number;
+    intervalSeconds: number;
+    throughputPerSecond: number;
+    errorCount: number;
+    errorRate: number;
+    avgResponseTime: number;
+}
+
+export interface LevelDistributionItem {
+    level: string;
+    count: number;
+}
+
+export interface MetricsResponse {
+    totalLogs: number;
+    errorCount: number;
+    errorRate: number;
+    avgResponseTime: number;
+    p95Latency: number;
+    bucketInterval: string;
+    throughputOverTime: MetricsTimeBucket[];
+    levelDistribution: LevelDistributionItem[];
+}
+
 export interface Alert {
     service: string;
     message: string;
@@ -46,7 +72,7 @@ export interface FilterOptions {
     level?: string[];
     traceId?: string;
     message?: string;
-    timePreset?: '5m' | '15m' | '1h' | '24h' | 'all' | 'custom';
+    timePreset?: '5m' | '15m' | '1h' | '24h' | '7d' | '15d' | 'custom';
     from?: string; // ISO string
     to?: string;   // ISO string
     page?: number;

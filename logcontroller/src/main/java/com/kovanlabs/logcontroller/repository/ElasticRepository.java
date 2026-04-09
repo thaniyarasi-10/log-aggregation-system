@@ -1,7 +1,10 @@
 package com.kovanlabs.logcontroller.repository;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -10,14 +13,21 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import org.springframework.beans.factory.annotation.Autowired;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
 
+import com.kovanlabs.logcontroller.auth.AuthenticatedUserContext;
 import com.kovanlabs.logcontroller.model.LogEvent;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch._types.FieldValue;
 import co.elastic.clients.elasticsearch._types.SortOrder;
+import co.elastic.clients.elasticsearch._types.query_dsl.QueryBuilders;
+import co.elastic.clients.elasticsearch._types.Time;
+import co.elastic.clients.elasticsearch._types.aggregations.FieldDateMath;
 import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
+import co.elastic.clients.elasticsearch._types.query_dsl.MatchQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch._types.query_dsl.RangeQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.TermQuery;
@@ -30,16 +40,57 @@ import co.elastic.clients.json.JsonData;
 @Repository
 public class ElasticRepository {
 
+        private static final Logger LOGGER = LoggerFactory.getLogger(ElasticRepository.class);
+
     private static final String TIMESTAMP_FIELD = "timestamp";
+        private static final String METRICS_TIMESTAMP_FIELD = TIMESTAMP_FIELD;
     private static final String LEVEL_KEYWORD   = "level.keyword";
     private static final String SERVICE_KEYWORD = "service.keyword";
+                private static final String PROJECT_KEYWORD = "project.keyword";
+        private static final String ENV_KEYWORD     = "environment.keyword";
+        private static final String TRACE_KEYWORD   = "traceId.keyword";
+        private static final String MESSAGE_FIELD   = "message";
     private static final String INDEX_PATTERN   = "app-logs-*";
+                private static final String NO_ACCESS_SENTINEL = "__NO_ACCESS__";
+        private static final String ERROR_LEVEL = "ERROR";
+        private static final String RESPONSE_TIME_FIELD = "responseTime";
+        private static final String AGG_TOTAL_COUNT = "total_count";
+        private static final String AGG_ERROR_COUNT = "error_count";
+        private static final String AGG_AVG_RESPONSE_TIME = "avg_response_time";
+        private static final String AGG_P95_LATENCY = "p95_latency";
+        private static final String AGG_LEVEL_DISTRIBUTION = "level_distribution";
+        private static final String AGG_THROUGHPUT_OVER_TIME = "throughput_over_time";
+        private static final String AGG_BUCKET_ERROR_COUNT = "bucket_error_count";
+        private static final String AGG_BUCKET_AVG_RESPONSE_TIME = "bucket_avg_response_time";
+        private static final String DEFAULT_METRICS_INTERVAL = "1m";
+        private static final int TARGET_BUCKET_COUNT = 80;
+        private static final String PRESET_5M = "5m";
+        private static final String PRESET_15M = "15m";
+        private static final String PRESET_1H = "1h";
+        private static final String PRESET_24H = "24h";
+        private static final String PRESET_7D = "7d";
+        private static final String PRESET_15D = "15d";
+        private static final String PRESET_CUSTOM = "custom";
+        private static final Duration RETENTION_PERIOD = Duration.ofDays(15);
+        private static final long WRITE_BACKOFF_MS = 30_000L;
+        private static final long ERROR_LOG_THROTTLE_MS = 30_000L;
 
-    @Autowired
-    private ElasticsearchClient client;
+        private volatile long writesMutedUntilMs = 0L;
+        private volatile long nextErrorLogAtMs = 0L;
+
+        private final ElasticsearchClient client;
+
+        public ElasticRepository(ElasticsearchClient client) {
+                this.client = client;
+        }
 
     // SAVE
     public void save(LogEvent log) {
+                long now = System.currentTimeMillis();
+                if (now < writesMutedUntilMs) {
+                        return;
+                }
+
         try {
             String index = "app-logs-" + LocalDate.now();
             IndexRequest<LogEvent> request = IndexRequest.of(i -> i
@@ -47,21 +98,27 @@ public class ElasticRepository {
                     .document(log)
             );
             client.index(request);
+
+                        if (writesMutedUntilMs != 0L) {
+                                writesMutedUntilMs = 0L;
+                                LOGGER.info("Elasticsearch connection restored. Resuming log persistence.");
+                        }
         } catch (Exception e) {
-            e.printStackTrace();
+                        writesMutedUntilMs = now + WRITE_BACKOFF_MS;
+                        logErrorThrottled("write", e);
         }
     }
 
 //SEARCH
-    public List<LogEvent> search(String service, String level,
+        public List<LogEvent> search(String service, String environment, String level,
+                                                                 String traceId, String message,
                                  String from, String to,
-                                 int page, int size) {
+                                 int page, int size,
+                                 AuthenticatedUserContext accessContext) {
         try {
-            String effectiveFrom = (from == null || from.isBlank()) ? "now-24h" : from;
-            String effectiveTo = (to == null || to.isBlank()) ? "now" : to;
-
+                        TimeBounds bounds = resolveTimeBounds(from, to);
             BoolQuery boolQuery = BoolQuery.of(b -> b
-                    .filter(buildFilters(service, level, effectiveFrom, effectiveTo)));
+                                                                                .filter(buildFilters(service, environment, level, traceId, message, bounds, accessContext)));
 
             SearchRequest request = SearchRequest.of(s -> s
                     .index(INDEX_PATTERN)
@@ -70,8 +127,8 @@ public class ElasticRepository {
                     .size(size)
                     .sort(sort -> sort
                             .field(f -> f
-                                    .field(TIMESTAMP_FIELD)
-                                    .order(SortOrder.Desc)))
+                                    .field(METRICS_TIMESTAMP_FIELD)
+                                            .order(SortOrder.Desc)))
             );
 
             SearchResponse<LogEvent> response = client.search(request, LogEvent.class);
@@ -80,100 +137,338 @@ public class ElasticRepository {
                     .stream()
                     .map(Hit::source)
                     .filter(Objects::nonNull)
-                    .collect(Collectors.toList());
+                    .toList();
 
         } catch (Exception e) {
-            e.printStackTrace();
+                        logErrorThrottled("search", e);
             return new ArrayList<>();
         }
     }
 
+        public List<String> getDistinctServices(String from, String to, int maxServices, AuthenticatedUserContext accessContext) {
+                try {
+                        boolean hasTimeFilter = hasText(from) || hasText(to);
+                        List<Query> filters = new ArrayList<>();
+
+                        if (hasTimeFilter) {
+                                TimeBounds bounds = resolveTimeBounds(from, to);
+                                filters.add(rangeQuery(bounds));
+                        }
+
+                        buildAccessFilter(accessContext).ifPresent(filters::add);
+
+                        Query query = filters.isEmpty()
+                                ? QueryBuilders.matchAll().build()._toQuery()
+                                : BoolQuery.of(b -> b.filter(filters))._toQuery();
+
+                        SearchRequest request = SearchRequest.of(s -> s
+                                        .index(INDEX_PATTERN)
+                                        .query(query)
+                                        .size(0)
+                                        .aggregations("services", a -> a
+                                                        .terms(t -> t
+                                                                        .field(SERVICE_KEYWORD)
+                                                                        .size(Math.max(1, maxServices))
+                                                        ))
+                                        .aggregations("projects", a -> a
+                                                        .terms(t -> t
+                                                                        .field(PROJECT_KEYWORD)
+                                                                        .size(Math.max(1, maxServices))
+                                                        ))
+                        );
+
+                        SearchResponse<Void> response = client.search(request, Void.class);
+
+                        List<String> services = response.aggregations()
+                                        .get("services")
+                                        .sterms()
+                                        .buckets()
+                                        .array()
+                                        .stream()
+                                        .map(bucket -> bucket.key().stringValue())
+                                        .filter(Objects::nonNull)
+                                        .filter(svc -> !svc.isBlank())
+                                        .toList();
+
+                        List<String> projects = response.aggregations()
+                                        .get("projects")
+                                        .sterms()
+                                        .buckets()
+                                        .array()
+                                        .stream()
+                                        .map(bucket -> bucket.key().stringValue())
+                                        .filter(Objects::nonNull)
+                                        .filter(project -> !project.isBlank())
+                                        .toList();
+
+                        return Stream.concat(services.stream(), projects.stream())
+                                        .map(String::trim)
+                                        .filter(name -> !name.isBlank())
+                                        .distinct()
+                                        .sorted()
+                                        .toList();
+
+                } catch (Exception e) {
+                        logErrorThrottled("getDistinctServices", e);
+                        return new ArrayList<>();
+                }
+        }
+
 // METRICS
 
-    public Map<String, Object> getMetrics(String service, String from, String to) {
+        public Map<String, Object> getMetrics(String service, String from, String to, String timePreset, AuthenticatedUserContext accessContext) {
         try {
-            BoolQuery boolQuery = BoolQuery.of(b -> b
-                    .filter(buildFilters(service, null, from, to)));
-
-            SearchRequest request = SearchRequest.of(s -> s
-                    .index(INDEX_PATTERN)
-                    .query(boolQuery._toQuery())
-                    .size(0)
-                    .aggregations("total_count", a -> a
-                            .valueCount(v -> v.field(LEVEL_KEYWORD)))
-                    .aggregations("error_count", a -> a
-                            .filter(f -> f
-                                    .term(t -> t
-                                            .field(LEVEL_KEYWORD)
-                                            .value("ERROR"))))
-                    .aggregations("avg_response_time", a -> a
-                            .avg(avg -> avg.field("responseTime")))
-                    .aggregations("p95_latency", a -> a
-                            .percentiles(p -> p
-                                    .field("responseTime")
-                                    .percents(95.0)))
-                    .aggregations("errors_over_time", a -> a
-                            .dateHistogram(dh -> dh
-                                    .field(TIMESTAMP_FIELD)
-                                    .calendarInterval(
-                                            co.elastic.clients.elasticsearch._types.aggregations
-                                                    .CalendarInterval.Hour)))
-            );
+                                                TimeBounds bounds = resolveTimeBounds(from, to);
+                                                                                                String interval = resolveMetricsInterval(bounds, timePreset);
+                        int intervalSeconds = toIntervalSeconds(interval);
+                                                SearchRequest request = buildMetricsRequest(service, bounds, interval, accessContext);
 
             SearchResponse<Void> response = client.search(request, Void.class);
-
-            long total = (long) response.aggregations()
-                    .get("total_count").valueCount().value();
-
-            long errors = response.aggregations()
-                    .get("error_count").filter().docCount();
-
-            double avgRt = response.aggregations()
-                    .get("avg_response_time").avg().value();
-
-            double p95 = response.aggregations()
-                    .get("p95_latency")
-                    .tdigestPercentiles()
-                    .values()
-                    .keyed()
-                    .entrySet()
-                    .stream()
-                    .filter(e -> e.getKey().equals("95.0"))
-                    .mapToDouble(e -> Double.parseDouble(e.getValue()))
-                    .findFirst()
-                    .orElse(0.0);
-
-            List<Map<String, Object>> errorsOverTime = response.aggregations()
-                    .get("errors_over_time")
-                    .dateHistogram()
-                    .buckets()
-                    .array()
-                    .stream()
-                    .map(bucket -> Map.<String, Object>of(
-                            "time",  Optional.ofNullable(bucket.keyAsString()).orElse(""),
-                            "count", bucket.docCount()
-                    ))
-                    .collect(Collectors.toList());
-
-            double errorRate = total > 0 ? (errors * 100.0 / total) : 0.0;
-
-            return Stream.of(
-                    Map.entry("totalLogs",       total),
-                    Map.entry("errorCount",      errors),
-                    Map.entry("errorRate",       Math.round(errorRate * 100.0) / 100.0 + "%"),
-                    Map.entry("avgResponseTime", Math.round(avgRt) + "ms"),
-                    Map.entry("p95Latency",      Math.round(p95) + "ms"),
-                    Map.entry("errorsOverTime",  errorsOverTime)
-            ).collect(Collectors.toMap(
-                    Map.Entry::getKey,
-                    Map.Entry::getValue
-            ));
+                        return toMetricsPayload(response, interval, intervalSeconds);
 
         } catch (Exception e) {
-            e.printStackTrace();
+                        logErrorThrottled("metrics", e);
             return new HashMap<>();
         }
     }
+
+        private SearchRequest buildMetricsRequest(String service, TimeBounds bounds, String interval, AuthenticatedUserContext accessContext) {
+        BoolQuery boolQuery = BoolQuery.of(b -> b.filter(buildMetricFilters(service, bounds, accessContext)));
+
+        return SearchRequest.of(s -> s
+                .index(INDEX_PATTERN)
+                .query(boolQuery._toQuery())
+                .size(0)
+                .aggregations(AGG_TOTAL_COUNT, a -> a
+                        .valueCount(v -> v.field(SERVICE_KEYWORD)))
+                .aggregations(AGG_ERROR_COUNT, a -> a
+                        .filter(f -> f
+                                .term(t -> t
+                                        .field(LEVEL_KEYWORD)
+                                        .value(ERROR_LEVEL))))
+                .aggregations(AGG_AVG_RESPONSE_TIME, a -> a
+                        .avg(avg -> avg.field(RESPONSE_TIME_FIELD)))
+                .aggregations(AGG_P95_LATENCY, a -> a
+                        .percentiles(p -> p
+                                .field(RESPONSE_TIME_FIELD)
+                                .percents(95.0)))
+                .aggregations(AGG_LEVEL_DISTRIBUTION, a -> a
+                        .terms(t -> t
+                                .field(LEVEL_KEYWORD)
+                                .size(10)))
+                .aggregations(AGG_THROUGHPUT_OVER_TIME, a -> a
+                        .dateHistogram(dh -> dh
+                                .field(METRICS_TIMESTAMP_FIELD)
+                                .fixedInterval(Time.of(t -> t.time(interval)))
+                                .minDocCount(0)
+                                .extendedBounds(eb -> eb
+                                        .min(FieldDateMath.of(f -> f.expr(bounds.fromIso())))
+                                        .max(FieldDateMath.of(f -> f.expr(bounds.toIso()))))
+                        )
+                        .aggregations(AGG_BUCKET_ERROR_COUNT, sub -> sub
+                                .filter(f -> f
+                                        .term(t -> t
+                                                .field(LEVEL_KEYWORD)
+                                                .value(ERROR_LEVEL))))
+                        .aggregations(AGG_BUCKET_AVG_RESPONSE_TIME, sub -> sub
+                                .avg(avg -> avg.field(RESPONSE_TIME_FIELD))))
+        );
+    }
+
+        private List<Query> buildMetricFilters(String service, TimeBounds bounds, AuthenticatedUserContext accessContext) {
+        List<Query> filters = new ArrayList<>();
+
+        buildServiceFilter(service, accessContext).ifPresent(filters::add);
+
+                buildAccessFilter(accessContext).ifPresent(filters::add);
+
+                filters.add(rangeQuery(bounds));
+
+        return filters;
+    }
+
+        private Map<String, Object> toMetricsPayload(SearchResponse<Void> response, String interval, int intervalSeconds) {
+        List<Map<String, Object>> throughputOverTime = response.aggregations()
+                .get(AGG_THROUGHPUT_OVER_TIME)
+                .dateHistogram()
+                .buckets()
+                .array()
+                .stream()
+                .sorted(Comparator.comparingLong(bucket -> bucket.key()))
+                .map(bucket -> {
+                    long bucketErrors = bucket.aggregations().get(AGG_BUCKET_ERROR_COUNT).filter().docCount();
+                    long bucketCount = bucket.docCount();
+                                        double throughputPerSecond = intervalSeconds > 0 ? (bucketCount * 1.0 / intervalSeconds) : 0.0;
+                    return Map.<String, Object>of(
+                            "time", Objects.toString(bucket.keyAsString(), ""),
+                            "count", bucketCount,
+                            "intervalSeconds", intervalSeconds,
+                            "throughputPerSecond", normalizeDouble(throughputPerSecond),
+                            "errorCount", bucketErrors,
+                            "errorRate", bucketCount > 0 ? (bucketErrors * 100.0 / bucketCount) : 0.0,
+                            "avgResponseTime", normalizeDouble(bucket.aggregations().get(AGG_BUCKET_AVG_RESPONSE_TIME).avg().value())
+                    );
+                })
+                .toList();
+
+        long total = (long) response.aggregations()
+                .get(AGG_TOTAL_COUNT).valueCount().value();
+
+        long errors = response.aggregations()
+                .get(AGG_ERROR_COUNT).filter().docCount();
+
+        double avgRt = normalizeDouble(response.aggregations()
+                .get(AGG_AVG_RESPONSE_TIME).avg().value());
+
+        double p95 = extractP95(response);
+
+        List<Map<String, Object>> levelDistribution = response.aggregations()
+                .get(AGG_LEVEL_DISTRIBUTION)
+                .sterms()
+                .buckets()
+                .array()
+                .stream()
+                .map(bucket -> Map.<String, Object>of(
+                        "level", bucket.key().stringValue(),
+                        "count", bucket.docCount()
+                ))
+                .toList();
+
+        double errorRate = total > 0 ? (errors * 100.0 / total) : 0.0;
+
+        return Stream.of(
+                Map.entry("totalLogs",       total),
+                Map.entry("errorCount",      errors),
+                Map.entry("errorRate",       Math.round(errorRate * 100.0) / 100.0),
+                Map.entry("avgResponseTime", avgRt),
+                Map.entry("p95Latency",      p95),
+                                Map.entry("bucketInterval", interval),
+                Map.entry("throughputOverTime", throughputOverTime),
+                Map.entry("levelDistribution", levelDistribution)
+        ).collect(Collectors.toMap(
+                Map.Entry::getKey,
+                Map.Entry::getValue
+        ));
+    }
+
+        private int toIntervalSeconds(String interval) {
+                if (interval == null || interval.isBlank()) {
+                        return 60;
+                }
+                if (interval.endsWith("s")) {
+                        return Integer.parseInt(interval.substring(0, interval.length() - 1));
+                }
+                if (interval.endsWith("m")) {
+                        return Integer.parseInt(interval.substring(0, interval.length() - 1)) * 60;
+                }
+                if (interval.endsWith("h")) {
+                        return Integer.parseInt(interval.substring(0, interval.length() - 1)) * 3600;
+                }
+                return 60;
+        }
+
+        private String resolveMetricsInterval(TimeBounds bounds, String timePreset) {
+                if (timePreset != null && !timePreset.isBlank() && !PRESET_CUSTOM.equalsIgnoreCase(timePreset)) {
+                        return switch (timePreset) {
+                                case PRESET_5M -> "30s";
+                                case PRESET_15M -> "1m";
+                                case PRESET_1H -> "5m";
+                                case PRESET_24H -> "2h";
+                                case PRESET_7D -> "6h";
+                                case PRESET_15D -> "1d";
+                                default -> DEFAULT_METRICS_INTERVAL;
+                        };
+                }
+
+                long rangeMs = resolveRangeMillis(bounds.fromIso(), bounds.toIso());
+                if (rangeMs <= 0) {
+                        return DEFAULT_METRICS_INTERVAL;
+                }
+
+                long rawIntervalMs = Math.max(1L, rangeMs / TARGET_BUCKET_COUNT);
+                return roundIntervalToStandard(rawIntervalMs);
+        }
+
+        private String roundIntervalToStandard(long intervalMs) {
+                if (intervalMs <= 30_000L) {
+                        return "30s";
+                }
+                if (intervalMs <= 60_000L) {
+                        return "1m";
+                }
+                if (intervalMs <= 2 * 60_000L) {
+                        return "2m";
+                }
+                if (intervalMs <= 5 * 60_000L) {
+                        return "5m";
+                }
+                if (intervalMs <= 10 * 60_000L) {
+                        return "10m";
+                }
+                if (intervalMs <= 15 * 60_000L) {
+                        return "15m";
+                }
+                if (intervalMs <= 30 * 60_000L) {
+                        return "30m";
+                }
+                if (intervalMs <= 60 * 60_000L) {
+                        return "1h";
+                }
+                if (intervalMs <= 2 * 60 * 60_000L) {
+                        return "2h";
+                }
+                if (intervalMs <= 6 * 60 * 60_000L) {
+                        return "6h";
+                }
+                if (intervalMs <= 12 * 60 * 60_000L) {
+                        return "12h";
+                }
+                return "1d";
+        }
+
+        private long resolveRangeMillis(String from, String to) {
+                try {
+                        if (from == null || from.isBlank() || to == null || to.isBlank()) {
+                                return -1L;
+                        }
+                        Instant fromInstant = Instant.parse(from);
+                        Instant toInstant = Instant.parse(to);
+                        return Math.max(0L, Duration.between(fromInstant, toInstant).toMillis());
+                } catch (Exception ignored) {
+                        return -1L;
+                }
+        }
+
+    private double extractP95(SearchResponse<Void> response) {
+        try {
+                if (response.aggregations() == null || response.aggregations().get(AGG_P95_LATENCY) == null) {
+                        return 0.0;
+                }
+
+                Map<String, String> keyed = response.aggregations()
+                        .get(AGG_P95_LATENCY)
+                        .tdigestPercentiles()
+                        .values()
+                        .keyed();
+
+                if (keyed == null) {
+                        return 0.0;
+                }
+
+                String rawP95 = keyed.get("95.0");
+                if (rawP95 == null || rawP95.isBlank()) {
+                        return 0.0;
+                }
+
+                return normalizeDouble(Double.parseDouble(rawP95));
+        } catch (Exception ignored) {
+                return 0.0;
+        }
+    }
+
+        private double normalizeDouble(double value) {
+                return Double.isFinite(value) ? Math.round(value * 100.0) / 100.0 : 0.0;
+        }
 
         public long countErrorsInWindow(String windowExpression) {
                 try {
@@ -186,9 +481,10 @@ public class ElasticRepository {
                                         .size(0));
 
                         SearchResponse<Void> response = client.search(request, Void.class);
-                        return response.hits().total() != null ? response.hits().total().value() : 0L;
+                        var total = response.hits().total();
+                        return total != null ? total.value() : 0L;
                 } catch (Exception e) {
-                        e.printStackTrace();
+                        logErrorThrottled("countErrorsInWindow", e);
                         return 0L;
                 }
         }
@@ -220,47 +516,194 @@ public class ElasticRepository {
                                                         bucket -> bucket.docCount()
                                         ));
                 } catch (Exception e) {
-                        e.printStackTrace();
+                                                logErrorThrottled("countErrorsByServiceInWindow", e);
                         return new HashMap<>();
+                }
+        }
+
+        private void logErrorThrottled(String operation, Exception e) {
+                long now = System.currentTimeMillis();
+                if (now >= nextErrorLogAtMs) {
+                        nextErrorLogAtMs = now + ERROR_LOG_THROTTLE_MS;
+                        LOGGER.warn("Elasticsearch {} failed: {}", operation, e.getMessage());
                 }
         }
 
     // SHARED FILTER BUILDER
 
-    private List<Query> buildFilters(String service, String level,
-                                     String from, String to) {
+        private List<Query> buildFilters(String service, String environment, String level,
+                                                                         String traceId, String message,
+                                                                         TimeBounds bounds,
+                                                                         AuthenticatedUserContext accessContext) {
         List<Query> filters = Stream.of(
-                        Optional.ofNullable(service)
-                                .filter(s -> !s.isEmpty())
-                                .map(s -> TermQuery.of(t -> t
-                                        .field(SERVICE_KEYWORD)
-                                        .value(s))._toQuery()),
+                        buildServiceFilter(service, accessContext),
+
+                        Optional.ofNullable(environment)
+                                .filter(env -> !env.isBlank())
+                                .map(env -> TermQuery.of(t -> t
+                                        .field(ENV_KEYWORD)
+                                        .value(env))._toQuery()),
 
                         Optional.ofNullable(level)
                                 .filter(l -> !l.isEmpty())
                                 .map(l -> TermQuery.of(t -> t
                                         .field(LEVEL_KEYWORD)
-                                        .value(l))._toQuery())
+                                        .value(l))._toQuery()),
+
+                        Optional.ofNullable(traceId)
+                                .filter(tid -> !tid.isBlank())
+                                .map(tid -> TermQuery.of(t -> t
+                                        .field(TRACE_KEYWORD)
+                                        .value(tid))._toQuery()),
+
+                        Optional.ofNullable(message)
+                                .filter(msg -> !msg.isBlank())
+                                .map(msg -> MatchQuery.of(m -> m
+                                        .field(MESSAGE_FIELD)
+                                        .query(msg))._toQuery())
                 )
                 .filter(Optional::isPresent)
                 .map(Optional::get)
-                .collect(Collectors.toList());
+                                .collect(Collectors.toCollection(ArrayList::new));
 
-        if ((from != null && !from.isBlank()) || (to != null && !to.isBlank())) {
-            filters.add(RangeQuery.of(r -> {
-                r.field(TIMESTAMP_FIELD);
-                if (from != null && !from.isBlank()) {
-                    r.gte(JsonData.of(from));
-                }
-                if (to != null && !to.isBlank()) {
-                    r.lte(JsonData.of(to));
-                }
-                return r;
-            })._toQuery());
-        }
+                buildAccessFilter(accessContext).ifPresent(filters::add);
+
+                filters.add(rangeQuery(bounds));
 
         return filters;
     }
+
+        private Optional<Query> buildServiceFilter(String service, AuthenticatedUserContext accessContext) {
+                if (!hasText(service) || "All Services".equalsIgnoreCase(service)) {
+                        return Optional.empty();
+                }
+
+                if (!accessContext.isAdmin() && !accessContext.isServiceAllowed(service)) {
+                        LOGGER.warn("DEV user {} requested unauthorized service '{}'", accessContext.email(), service);
+                        return Optional.of(noAccessQuery());
+                }
+
+                Query serviceQuery = TermQuery.of(t -> t
+                                .field(SERVICE_KEYWORD)
+                                .value(service))._toQuery();
+
+                Query projectQuery = TermQuery.of(t -> t
+                                .field(PROJECT_KEYWORD)
+                                .value(service))._toQuery();
+
+                Query combinedQuery = BoolQuery.of(b -> b
+                                .should(serviceQuery)
+                                .should(projectQuery)
+                                .minimumShouldMatch("1")
+                )._toQuery();
+
+                return Optional.of(combinedQuery);
+        }
+
+        private Optional<Query> buildAccessFilter(AuthenticatedUserContext accessContext) {
+                if (accessContext == null || accessContext.isAdmin()) {
+                        return Optional.empty();
+                }
+
+                List<String> allowedServices = accessContext.allowedServices();
+                if (allowedServices == null || allowedServices.isEmpty()) {
+                        return Optional.of(noAccessQuery());
+                }
+
+                List<FieldValue> fieldValues = allowedServices.stream()
+                                .filter(this::hasText)
+                                .map(FieldValue::of)
+                                .toList();
+
+                if (fieldValues.isEmpty()) {
+                        return Optional.of(noAccessQuery());
+                }
+
+                Query serviceTerms = QueryBuilders.terms()
+                                .field(SERVICE_KEYWORD)
+                                .terms(v -> v.value(fieldValues))
+                                .build()._toQuery();
+
+                Query projectTerms = QueryBuilders.terms()
+                                .field(PROJECT_KEYWORD)
+                                .terms(v -> v.value(fieldValues))
+                                .build()._toQuery();
+
+                return Optional.of(BoolQuery.of(b -> b
+                                .should(serviceTerms)
+                                .should(projectTerms)
+                                .minimumShouldMatch("1")
+                )._toQuery());
+        }
+
+        private Query noAccessQuery() {
+                return TermQuery.of(t -> t
+                                .field(SERVICE_KEYWORD)
+                                .value(NO_ACCESS_SENTINEL)
+                )._toQuery();
+        }
+
+        private Query rangeQuery(TimeBounds bounds) {
+                Query preferredTimeRange = RangeQuery.of(r -> r
+                                .field(METRICS_TIMESTAMP_FIELD)
+                                .gte(JsonData.of(bounds.fromIso()))
+                                .lte(JsonData.of(bounds.toIso()))
+                )._toQuery();
+
+                Query fallbackTimeRange = RangeQuery.of(r -> r
+                                .field(TIMESTAMP_FIELD)
+                                .gte(JsonData.of(bounds.fromIso()))
+                                .lte(JsonData.of(bounds.toIso()))
+                )._toQuery();
+
+                return BoolQuery.of(b -> b
+                                .should(preferredTimeRange)
+                                .should(fallbackTimeRange)
+                                .minimumShouldMatch("1")
+                )._toQuery();
+        }
+
+        private TimeBounds resolveTimeBounds(String requestedFrom, String requestedTo) {
+                Instant now = Instant.now();
+                Instant retentionStart = now.minus(RETENTION_PERIOD);
+
+                Instant to = parseInstantOrNull(requestedTo);
+                if (to == null || to.isAfter(now)) {
+                        to = now;
+                }
+
+                Instant from = parseInstantOrNull(requestedFrom);
+                if (from == null) {
+                        from = retentionStart;
+                }
+
+                if (from.isBefore(retentionStart)) {
+                        from = retentionStart;
+                }
+
+                if (from.isAfter(to)) {
+                        from = to;
+                }
+
+                return new TimeBounds(from.toString(), to.toString());
+        }
+
+        private Instant parseInstantOrNull(String value) {
+                try {
+                        if (value == null || value.isBlank()) {
+                                return null;
+                        }
+                        return Instant.parse(value);
+                } catch (Exception ignored) {
+                        return null;
+                }
+        }
+
+        private boolean hasText(String value) {
+                return value != null && !value.isBlank();
+        }
+
+        private record TimeBounds(String fromIso, String toIso) {}
 
         private List<Query> buildErrorWindowFilters(String windowExpression) {
                 return Stream.of(
@@ -272,6 +715,6 @@ public class ElasticRepository {
                                                                 .gte(JsonData.of("now-" + windowExpression))
                                                                 .lte(JsonData.of("now")))._toQuery()
                                 )
-                                .collect(Collectors.toList());
+                                .toList();
         }
 }

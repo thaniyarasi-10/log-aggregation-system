@@ -1,6 +1,7 @@
 import { FilterOptions, LogEvent } from '../ts/types.js';
 
 export class Filters {
+    private static readonly RETENTION_DAYS = 15;
     private onChangeCallback: (filters: FilterOptions) => void;
     private knownServices = new Set<string>();
     private knownLevels = new Set<string>(['ERROR', 'WARN', 'INFO', 'DEBUG']);
@@ -9,6 +10,7 @@ export class Filters {
         this.onChangeCallback = onChange;
         this.renderLevels();
         this.bindEvents();
+        this.configureRetentionBounds();
         this.updateCustomRangeVisibility();
     }
 
@@ -29,6 +31,18 @@ export class Filters {
 
         if (changedService) this.renderServices();
         if (changedLevel) this.renderLevels();
+    }
+
+    public setAvailableServices(services: string[]) {
+        const unique = new Set<string>(this.knownServices);
+        services.forEach(service => {
+            if (service && service.trim().length > 0) {
+                unique.add(service.trim());
+            }
+        });
+
+        this.knownServices = unique;
+        this.renderServices();
     }
 
     private renderServices() {
@@ -114,13 +128,18 @@ export class Filters {
             return { isValid: false };
         }
 
-        if (fromDate.getTime() > toDate.getTime()) {
+        const now = new Date();
+        const minDate = new Date(now.getTime() - Filters.RETENTION_DAYS * 24 * 60 * 60 * 1000);
+        const clampedFrom = new Date(Math.max(fromDate.getTime(), minDate.getTime()));
+        const clampedTo = new Date(Math.min(toDate.getTime(), now.getTime()));
+
+        if (clampedFrom.getTime() > clampedTo.getTime()) {
             return { isValid: false };
         }
 
         return {
-            from: fromDate.toISOString(),
-            to: toDate.toISOString(),
+            from: clampedFrom.toISOString(),
+            to: clampedTo.toISOString(),
             isValid: true
         };
     }
@@ -146,13 +165,15 @@ export class Filters {
             return filters;
         }
 
-        if (timeRange && timeRange !== 'all') {
+        if (timeRange) {
             const now = new Date();
             let msToSubtract = 0;
             if (timeRange === '5m') msToSubtract = 5 * 60 * 1000;
             else if (timeRange === '15m') msToSubtract = 15 * 60 * 1000;
             else if (timeRange === '1h') msToSubtract = 60 * 60 * 1000;
             else if (timeRange === '24h') msToSubtract = 24 * 60 * 60 * 1000;
+            else if (timeRange === '7d') msToSubtract = 7 * 24 * 60 * 60 * 1000;
+            else if (timeRange === '15d') msToSubtract = 15 * 24 * 60 * 60 * 1000;
 
             if (msToSubtract > 0) {
                 const fromTime = new Date(now.getTime() - msToSubtract);
@@ -173,5 +194,36 @@ export class Filters {
             }
         }
         this.onChangeCallback(this.getCurrentFilters());
+    }
+
+    private configureRetentionBounds() {
+        const fromInput = document.getElementById('filter-from') as HTMLInputElement | null;
+        const toInput = document.getElementById('filter-to') as HTMLInputElement | null;
+        if (!fromInput || !toInput) {
+            return;
+        }
+
+        const now = new Date();
+        const minDate = new Date(now.getTime() - Filters.RETENTION_DAYS * 24 * 60 * 60 * 1000);
+        const minValue = this.toDateTimeLocalValue(minDate);
+        const maxValue = this.toDateTimeLocalValue(now);
+
+        fromInput.min = minValue;
+        fromInput.max = maxValue;
+        toInput.min = minValue;
+        toInput.max = maxValue;
+
+        if (!fromInput.value) {
+            const defaultFrom = new Date(now.getTime() - 60 * 60 * 1000);
+            fromInput.value = this.toDateTimeLocalValue(defaultFrom);
+        }
+        if (!toInput.value) {
+            toInput.value = maxValue;
+        }
+    }
+
+    private toDateTimeLocalValue(date: Date): string {
+        const pad = (n: number) => String(n).padStart(2, '0');
+        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
     }
 }

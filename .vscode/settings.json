@@ -1,4 +1,11 @@
 {
     "java.compile.nullAnalysis.mode": "disabled",
-    "java.configuration.updateBuildConfiguration": "automatic"
+    "java.configuration.updateBuildConfiguration": "automatic",
+    "chat.tools.terminal.autoApprove": {
+        "mvn -q clean": true,
+        "/^\\$javaCmd = Get-Command java -ErrorAction SilentlyContinue; if \\(\\$null -eq \\$javaCmd\\) \\{ Write-Output 'JAVA_NOT_FOUND'; exit 0 \\}; java -XshowSettings:properties -version 2>&1 \\| Select-String 'java\\.home' \\| ForEach-Object \\{ \\$_\\.Line\\.Trim\\(\\) \\}$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
 }

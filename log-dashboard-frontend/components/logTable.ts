@@ -18,6 +18,11 @@ export class LogTable {
     }
 
     public renderLogs(newLogs: LogEvent[]) {
+        const firstRow = this.container.firstElementChild as HTMLElement | null;
+        if (firstRow && firstRow.classList.contains('empty-state-row')) {
+            this.container.innerHTML = '';
+        }
+
         const fragment = document.createDocumentFragment();
         
         newLogs.forEach(log => {
@@ -44,6 +49,17 @@ export class LogTable {
     public clearLogs() {
         this.logs = [];
         this.container.innerHTML = '';
+    }
+
+    public showEmptyState(message: string) {
+        this.logs = [];
+        this.container.innerHTML = `
+            <tr class="empty-state-row">
+                <td colspan="6" style="padding: 1rem; text-align: center; color: var(--text-secondary);">
+                    ${escapeHtml(message)}
+                </td>
+            </tr>
+        `;
     }
 
     private createRow(log: LogEvent): HTMLElement {

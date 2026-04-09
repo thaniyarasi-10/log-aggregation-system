@@ -1,4 +1,5 @@
 export class Filters {
+    static RETENTION_DAYS = 15;
     onChangeCallback;
     knownServices = new Set();
     knownLevels = new Set(['ERROR', 'WARN', 'INFO', 'DEBUG']);
@@ -6,6 +7,7 @@ export class Filters {
         this.onChangeCallback = onChange;
         this.renderLevels();
         this.bindEvents();
+        this.configureRetentionBounds();
         this.updateCustomRangeVisibility();
     }
     updateAvailableOptions(logs) {
@@ -25,6 +27,16 @@ export class Filters {
             this.renderServices();
         if (changedLevel)
             this.renderLevels();
+    }
+    setAvailableServices(services) {
+        const unique = new Set(this.knownServices);
+        services.forEach(service => {
+            if (service && service.trim().length > 0) {
+                unique.add(service.trim());
+            }
+        });
+        this.knownServices = unique;
+        this.renderServices();
     }
     renderServices() {
         const select = document.getElementById('filter-service');
@@ -103,12 +115,16 @@ export class Filters {
         if (!Number.isFinite(fromDate.getTime()) || !Number.isFinite(toDate.getTime())) {
             return { isValid: false };
         }
-        if (fromDate.getTime() > toDate.getTime()) {
+        const now = new Date();
+        const minDate = new Date(now.getTime() - Filters.RETENTION_DAYS * 24 * 60 * 60 * 1000);
+        const clampedFrom = new Date(Math.max(fromDate.getTime(), minDate.getTime()));
+        const clampedTo = new Date(Math.min(toDate.getTime(), now.getTime()));
+        if (clampedFrom.getTime() > clampedTo.getTime()) {
             return { isValid: false };
         }
         return {
-            from: fromDate.toISOString(),
-            to: toDate.toISOString(),
+            from: clampedFrom.toISOString(),
+            to: clampedTo.toISOString(),
             isValid: true
         };
     }
@@ -134,7 +150,7 @@ export class Filters {
             }
             return filters;
         }
-        if (timeRange && timeRange !== 'all') {
+        if (timeRange) {
             const now = new Date();
             let msToSubtract = 0;
             if (timeRange === '5m')
@@ -145,6 +161,10 @@ export class Filters {
                 msToSubtract = 60 * 60 * 1000;
             else if (timeRange === '24h')
                 msToSubtract = 24 * 60 * 60 * 1000;
+            else if (timeRange === '7d')
+                msToSubtract = 7 * 24 * 60 * 60 * 1000;
+            else if (timeRange === '15d')
+                msToSubtract = 15 * 24 * 60 * 60 * 1000;
             if (msToSubtract > 0) {
                 const fromTime = new Date(now.getTime() - msToSubtract);
                 filters.from = fromTime.toISOString();
@@ -162,5 +182,31 @@ export class Filters {
             }
         }
         this.onChangeCallback(this.getCurrentFilters());
+    }
+    configureRetentionBounds() {
+        const fromInput = document.getElementById('filter-from');
+        const toInput = document.getElementById('filter-to');
+        if (!fromInput || !toInput) {
+            return;
+        }
+        const now = new Date();
+        const minDate = new Date(now.getTime() - Filters.RETENTION_DAYS * 24 * 60 * 60 * 1000);
+        const minValue = this.toDateTimeLocalValue(minDate);
+        const maxValue = this.toDateTimeLocalValue(now);
+        fromInput.min = minValue;
+        fromInput.max = maxValue;
+        toInput.min = minValue;
+        toInput.max = maxValue;
+        if (!fromInput.value) {
+            const defaultFrom = new Date(now.getTime() - 60 * 60 * 1000);
+            fromInput.value = this.toDateTimeLocalValue(defaultFrom);
+        }
+        if (!toInput.value) {
+            toInput.value = maxValue;
+        }
+    }
+    toDateTimeLocalValue(date) {
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
     }
 }
