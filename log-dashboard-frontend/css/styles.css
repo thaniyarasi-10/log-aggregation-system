@@ -31,6 +31,9 @@
     --oauth-btn-text: #1f2937;
     --oauth-btn-hover: #f3f4f6;
     --oauth-btn-active: #e5e7eb;
+    --azure-blue: #0078d4;
+    --azure-blue-dark: #005a9e;
+    --azure-panel-glow: rgba(0, 120, 212, 0.15);
     --chart-text: #334155;
     --chart-grid: rgba(51, 65, 85, 0.2);
     --chart-throughput-fill: rgba(5, 150, 105, 0.2);
@@ -72,6 +75,9 @@
     --oauth-btn-text: #3f3f3f;
     --oauth-btn-hover: #f8f8f8;
     --oauth-btn-active: #eeeeee;
+    --azure-blue: #4ea5f5;
+    --azure-blue-dark: #2c7fd1;
+    --azure-panel-glow: rgba(78, 165, 245, 0.2);
     --chart-text: #94a3b8;
     --chart-grid: rgba(148, 163, 184, 0.2);
     --chart-throughput-fill: rgba(16, 185, 129, 0.2);
@@ -508,10 +514,14 @@ body {
 .oauth-overlay {
     position: fixed;
     top: 0; left: 0; right: 0; bottom: 0;
-    background: var(--bg-dark);
+    background:
+        radial-gradient(circle at 12% 16%, var(--azure-panel-glow), transparent 45%),
+        radial-gradient(circle at 88% 85%, rgba(14, 165, 233, 0.12), transparent 42%),
+        var(--bg-dark);
     display: flex;
     justify-content: center; align-items: center;
     z-index: 2000;
+    padding: 1rem;
 }
 
 .oauth-panel {
@@ -523,6 +533,7 @@ body {
     align-items: center;
     text-align: center;
     gap: 1.5rem;
+    box-shadow: 0 18px 35px -20px var(--azure-panel-glow);
 }
 
 .oauth-logo {
@@ -559,6 +570,33 @@ body {
     box-shadow: 0 2px 4px rgba(0,0,0,0.2);
     transition: background 0.2s, transform 0.2s;
     font-family: 'Roboto', 'Inter', sans-serif;
+}
+
+.oauth-btn-azure {
+    background: linear-gradient(180deg, var(--azure-blue), var(--azure-blue-dark));
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    box-shadow: 0 10px 22px -16px var(--azure-blue-dark);
+}
+
+.oauth-btn-azure:hover {
+    background: linear-gradient(180deg, #0b84e2, #0067b8);
+}
+
+.oauth-idp-pill {
+    border: 1px solid var(--glass-border);
+    background: var(--surface-strong);
+    border-radius: 999px;
+    padding: 0.35rem 0.75rem;
+    font-size: 0.76rem;
+    letter-spacing: 0.02em;
+    color: var(--text-secondary);
+}
+
+.auth-status {
+    min-height: 1rem;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
 }
 
 .oauth-btn:hover {

@@ -15,13 +15,12 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kovanlabs.logcontroller.auth.AuthRequestContext;
 import com.kovanlabs.logcontroller.auth.AuthenticatedUserContext;
 import com.kovanlabs.logcontroller.model.LogEvent;
 import com.kovanlabs.logcontroller.repository.ElasticRepository;
 import com.kovanlabs.logcontroller.service.LogProcessingService;
+import com.kovanlabs.logcontroller.service.ServiceAccessAuthorizationService;
 
-import jakarta.servlet.http.HttpServletRequest;
 @RestController
 @CrossOrigin(origins = "http://localhost:3000", allowedHeaders = "*", methods = {RequestMethod.GET, RequestMethod.POST, RequestMethod.OPTIONS})
 @RequestMapping("/logs")
@@ -32,6 +31,9 @@ public class LogController {
 
     @Autowired
     private ElasticRepository elasticRepository;
+
+    @Autowired
+    private ServiceAccessAuthorizationService accessAuthorizationService;
 
     // single log
     private final ObjectMapper mapper = new ObjectMapper();
@@ -74,10 +76,9 @@ public class LogController {
             @RequestParam(value = "from", required = false) String from,
             @RequestParam(value = "to", required = false) String to,
             @RequestParam(value = "page", defaultValue = "0") int page,
-            @RequestParam(value = "size", defaultValue = "20") int size,
-            HttpServletRequest request
+            @RequestParam(value = "size", defaultValue = "20") int size
     ) {
-        AuthenticatedUserContext context = AuthRequestContext.getRequired(request);
+        AuthenticatedUserContext context = accessAuthorizationService.getCurrentUserAccessContext();
         List<LogEvent> logs =
                 elasticRepository.search(service, environment, level, traceId, message, from, to, page, size, context);
 
@@ -88,10 +89,9 @@ public class LogController {
     public ResponseEntity<List<String>> services(
             @RequestParam(value = "from", required = false) String from,
             @RequestParam(value = "to", required = false) String to,
-            @RequestParam(value = "size", defaultValue = "200") int size,
-            HttpServletRequest request
+            @RequestParam(value = "size", defaultValue = "200") int size
     ) {
-        AuthenticatedUserContext context = AuthRequestContext.getRequired(request);
+        AuthenticatedUserContext context = accessAuthorizationService.getCurrentUserAccessContext();
         return ResponseEntity.ok(elasticRepository.getDistinctServices(from, to, size, context));
     }
 
@@ -100,10 +100,9 @@ public class LogController {
             @RequestParam(value = "service", required = false) String service,
             @RequestParam(value = "from", required = false) String from,
             @RequestParam(value = "to", required = false) String to,
-            @RequestParam(value = "timePreset", required = false) String timePreset,
-            HttpServletRequest request
+            @RequestParam(value = "timePreset", required = false) String timePreset
     ) {
-        AuthenticatedUserContext context = AuthRequestContext.getRequired(request);
+        AuthenticatedUserContext context = accessAuthorizationService.getCurrentUserAccessContext();
         return ResponseEntity.ok(elasticRepository.getMetrics(service, from, to, timePreset, context));
     }
 }

@@ -1,32 +1,16 @@
 package com.kovanlabs.logcontroller.controller;
 
-import java.io.IOException;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.util.LinkedMultiValueMap;
-import org.springframework.util.MultiValueMap;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.oauth2.core.oidc.user.OidcUser;
+import org.springframework.security.oauth2.core.user.OAuth2User;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.client.RestTemplate;
-import org.springframework.web.util.UriComponentsBuilder;
-
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kovanlabs.logcontroller.auth.AuthRequestContext;
-import com.kovanlabs.logcontroller.auth.AuthenticatedUserContext;
-import com.kovanlabs.logcontroller.auth.AuthorizationService;
-import com.kovanlabs.logcontroller.auth.OAuthTokenVerifierService;
-import com.kovanlabs.logcontroller.auth.VerifiedOAuthUser;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -35,111 +19,101 @@ import jakarta.servlet.http.HttpServletResponse;
 @CrossOrigin(origins = "http://localhost:3000", allowCredentials = "true", allowedHeaders = "*")
 public class OAuthController {
 
-    private final String clientId;
-    private final String clientSecret;
-    private final String redirectUri;
-    private final String frontendUrl;
-
-    private final RestTemplate restTemplate = new RestTemplate();
-    private final ObjectMapper mapper = new ObjectMapper();
-    private final OAuthTokenVerifierService tokenVerifierService;
-    private final AuthorizationService authorizationService;
-
-    public OAuthController(
-            @Value("${spring.security.oauth2.client.registration.google.client-id:${GOOGLE_CLIENT_ID:}}") String clientId,
-            @Value("${spring.security.oauth2.client.registration.google.client-secret:${GOOGLE_CLIENT_SECRET:}}") String clientSecret,
-            @Value("${app.oauth.redirect-uri:http://localhost:8080/login/oauth2/code/google}") String redirectUri,
-            @Value("${app.oauth.frontend-url:http://localhost:3000}") String frontendUrl,
-            OAuthTokenVerifierService tokenVerifierService,
-            AuthorizationService authorizationService
-    ) {
-        this.clientId = clientId;
-        this.clientSecret = clientSecret;
-        this.redirectUri = redirectUri;
-        this.frontendUrl = frontendUrl;
-        this.tokenVerifierService = tokenVerifierService;
-        this.authorizationService = authorizationService;
+    @GetMapping("/api/auth/login")
+    public void login(HttpServletResponse response) throws java.io.IOException {
+        response.sendRedirect("/oauth2/authorization/azure");
     }
 
-    private void validateGoogleOAuthConfig() {
-        if (clientId == null || clientId.isBlank() || clientSecret == null || clientSecret.isBlank()) {
-            throw new IllegalStateException("Google OAuth is not configured. Set spring.security.oauth2.client.registration.google.client-id and client-secret.");
-        }
-    }
-
-    // 1. Redirect to Google OAuth
-    @GetMapping("/oauth2/authorization/google")
-    public void authorize(HttpServletResponse response) throws IOException {
-        validateGoogleOAuthConfig();
-        String authUrl = UriComponentsBuilder
-            .fromUriString("https://accounts.google.com/o/oauth2/v2/auth")
-                .queryParam("client_id", clientId)
-                .queryParam("redirect_uri", redirectUri)
-                .queryParam("response_type", "code")
-                .queryParam("scope", "email profile")
-                .queryParam("access_type", "online")
-                .encode()
-                .build()
-                .toUriString();
-        response.sendRedirect(authUrl);
-    }
-
-    // 2. Handle Google Callback
-    @GetMapping("/login/oauth2/code/google")
-    public void callback(@RequestParam("code") String code, HttpServletRequest request, HttpServletResponse response) throws IOException {
-        try {
-            validateGoogleOAuthConfig();
-            // Exchange code for Access Token
-            MultiValueMap<String, String> params = new LinkedMultiValueMap<>();
-            params.add("client_id", clientId);
-            params.add("client_secret", clientSecret);
-            params.add("code", code);
-            params.add("redirect_uri", redirectUri);
-            params.add("grant_type", "authorization_code");
-
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
-
-            HttpEntity<MultiValueMap<String, String>> entity = new HttpEntity<>(params, headers);
-            ResponseEntity<String> tokenResponse = restTemplate.postForEntity(
-                    "https://oauth2.googleapis.com/token", entity, String.class);
-
-            JsonNode tokenNode = mapper.readTree(tokenResponse.getBody());
-            String idToken = tokenNode.has("id_token") ? tokenNode.get("id_token").asText() : null;
-            if (idToken == null || idToken.isBlank()) {
-                throw new IllegalStateException("Google OAuth response did not include id_token");
-            }
-
-            VerifiedOAuthUser verifiedUser = tokenVerifierService.verifyIdToken(idToken);
-            authorizationService.resolveContextByVerifiedEmail(verifiedUser.email());
-            
-            response.sendRedirect(frontendUrl + "?token=" + java.net.URLEncoder.encode(idToken, "UTF-8"));
-
-        } catch (Exception e) {
-            e.printStackTrace();
-            response.sendRedirect(frontendUrl + "?error=" + java.net.URLEncoder.encode(e.getMessage(), "UTF-8"));
-        }
-    }
-
-    // 3. User Identity Validation Endpoint
     @GetMapping("/api/auth/me")
-    public ResponseEntity<?> getAuthUser(HttpServletRequest request) {
-        AuthenticatedUserContext context = AuthRequestContext.getRequired(request);
+    public ResponseEntity<?> getAuthUser(Authentication authentication) {
         Map<String, Object> payload = new HashMap<>();
-        payload.put("email", context.email());
-        payload.put("role", context.role().name().toLowerCase());
-        payload.put("services", context.isAdmin() ? List.of("*") : context.allowedServices());
+        if (authentication == null || !authentication.isAuthenticated()) {
+            payload.put("authenticated", false);
+            return ResponseEntity.status(401).body(payload);
+        }
+
+        payload.put("authenticated", true);
+        payload.put("authorities", authentication.getAuthorities().stream().map(Object::toString).toList());
+
+        Object principal = authentication.getPrincipal();
+        if (principal instanceof OidcUser oidcUser) {
+            payload.put("name", oidcUser.getFullName() != null ? oidcUser.getFullName() : oidcUser.getName());
+            payload.put("email", firstNonBlank(
+                    oidcUser.getEmail(),
+                    oidcUser.getPreferredUsername(),
+                    oidcUser.getAttribute("upn"),
+                    oidcUser.getAttribute("email"),
+                    oidcUser.getName()));
+            payload.put("claims", oidcUser.getClaims());
+        } else if (principal instanceof OAuth2User oauth2User) {
+            payload.put("name", firstNonBlank(
+                    oauth2User.getAttribute("name"),
+                    oauth2User.getAttribute("preferred_username"),
+                    oauth2User.getName()));
+            payload.put("email", firstNonBlank(
+                    oauth2User.getAttribute("email"),
+                    oauth2User.getAttribute("preferred_username"),
+                    oauth2User.getAttribute("upn"),
+                    oauth2User.getName()));
+            payload.put("attributes", oauth2User.getAttributes());
+        } else {
+            payload.put("name", authentication.getName());
+            payload.put("email", authentication.getName());
+        }
+
         return ResponseEntity.ok(payload);
     }
 
-    // 4. Terminate Auth
     @PostMapping("/logout")
     public ResponseEntity<?> logout(HttpServletRequest request, HttpServletResponse response) {
+        request.getSession().invalidate();
         return ResponseEntity.ok("{\"status\": \"logged_out\"}");
     }
 
     @GetMapping("/logout")
     public ResponseEntity<?> logoutGet(HttpServletRequest request, HttpServletResponse response) {
+        request.getSession().invalidate();
         return ResponseEntity.ok("{\"status\": \"logged_out\"}");
+    }
+
+    @GetMapping("/oauth2-login-error")
+    public ResponseEntity<?> oauth2LoginError(HttpServletRequest request) {
+        Map<String, Object> errorResponse = new HashMap<>();
+        String errorParam = request.getParameter("error");
+        errorResponse.put("error", errorParam != null ? errorParam : "Unknown OAuth2 error");
+        errorResponse.put("message", "Azure OAuth2 authentication failed. Check credentials and redirect URI configuration in Azure portal.");
+        errorResponse.put("redirectUri", "http://localhost:8080/login/oauth2/code/azure");
+        return ResponseEntity.status(401).body(errorResponse);
+    }
+
+    @GetMapping("/api/auth/diagnostics")
+    public ResponseEntity<?> diagnostics(org.springframework.core.env.Environment env) {
+        Map<String, Object> diagnostics = new HashMap<>();
+        String configuredClientId = env.getProperty("spring.security.oauth2.client.registration.azure.client-id");
+        String configuredSecret = env.getProperty("spring.security.oauth2.client.registration.azure.client-secret");
+        diagnostics.put("clientId", maskSecret(configuredClientId));
+        diagnostics.put("clientSecret", "***REDACTED***");
+        diagnostics.put("clientSecretConfigured", configuredSecret != null && !configuredSecret.isBlank());
+        diagnostics.put("issuerUri", env.getProperty("spring.security.oauth2.client.provider.azure.issuer-uri"));
+        diagnostics.put("redirectUri", "http://localhost:8080/login/oauth2/code/azure");
+        diagnostics.put("scopes", env.getProperty("spring.security.oauth2.client.registration.azure.scope"));
+        diagnostics.put("clientAuthMethod", env.getProperty("spring.security.oauth2.client.registration.azure.client-authentication-method"));
+        diagnostics.put("authGrantType", env.getProperty("spring.security.oauth2.client.registration.azure.authorization-grant-type"));
+        diagnostics.put("message", "Verify these values match your Azure App Registration exactly. Redirect URI must be registered in Azure portal.");
+        return ResponseEntity.ok(diagnostics);
+    }
+
+    private static String maskSecret(String value) {
+        if (value == null || value.length() <= 4) return "***";
+        return value.substring(0, 4) + "..." + value.substring(value.length() - 4);
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
     }
 }

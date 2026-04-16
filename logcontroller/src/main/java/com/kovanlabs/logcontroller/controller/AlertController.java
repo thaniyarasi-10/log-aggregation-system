@@ -1,9 +1,9 @@
 package com.kovanlabs.logcontroller.controller;
 
 import com.kovanlabs.logcontroller.model.Alert;
-import com.kovanlabs.logcontroller.auth.AuthRequestContext;
 import com.kovanlabs.logcontroller.auth.AuthenticatedUserContext;
 import com.kovanlabs.logcontroller.service.AlertService;
+import com.kovanlabs.logcontroller.service.ServiceAccessAuthorizationService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -17,8 +17,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-import jakarta.servlet.http.HttpServletRequest;
-
 @RestController
 @CrossOrigin(origins = "http://localhost:3000", allowedHeaders = "*", methods = {RequestMethod.GET, RequestMethod.OPTIONS})
 @RequestMapping("/alerts")
@@ -29,9 +27,12 @@ public class AlertController {
     @Autowired
     private AlertService alertService;
 
+    @Autowired
+    private ServiceAccessAuthorizationService accessAuthorizationService;
+
     @GetMapping
-    public Map<String, List<Map<String, Object>>> getAlerts(HttpServletRequest request) {
-        AuthenticatedUserContext context = AuthRequestContext.getRequired(request);
+    public Map<String, List<Map<String, Object>>> getAlerts() {
+        AuthenticatedUserContext context = accessAuthorizationService.getCurrentUserAccessContext();
 
         return alertService.getRecentAlertsGroupedByService().entrySet().stream()
                 .filter(entry -> context.isAdmin() || context.isServiceAllowed(entry.getKey()))

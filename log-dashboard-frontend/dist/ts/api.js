@@ -1,8 +1,7 @@
-// Central helper to get auth headers for every backend request
-function getAuthHeaders() {
-    const token = localStorage.getItem('logflow_jwt');
-    return token ? { 'Authorization': 'Bearer ' + token } : {};
-}
+const API_BASE_URL = 'http://localhost:8080';
+const SESSION_FETCH_OPTIONS = {
+    credentials: 'include'
+};
 export class ApiClient {
     static async fetchLogs(filters) {
         try {
@@ -27,10 +26,8 @@ export class ApiClient {
             if (typeof filters.size === 'number')
                 params.append('size', String(filters.size));
             const queryString = params.toString();
-            const url = `http://localhost:8080/logs${queryString ? '?' + queryString : ''}`;
-            const response = await fetch(url, {
-                headers: getAuthHeaders()
-            });
+            const url = `${API_BASE_URL}/logs${queryString ? '?' + queryString : ''}`;
+            const response = await fetch(url, SESSION_FETCH_OPTIONS);
             if (!response.ok) {
                 console.warn(`Backend error (${response.status}) for ${url}, returning empty array.`);
                 return [];
@@ -44,9 +41,7 @@ export class ApiClient {
     }
     static async fetchAlerts() {
         try {
-            const response = await fetch('http://localhost:8080/alerts', {
-                headers: getAuthHeaders()
-            });
+            const response = await fetch(`${API_BASE_URL}/alerts`, SESSION_FETCH_OPTIONS);
             if (!response.ok) {
                 console.warn(`Backend error (${response.status}) for /alerts, returning empty alerts.`);
                 return {};
@@ -60,18 +55,8 @@ export class ApiClient {
     }
     static async fetchServices(filters = {}) {
         try {
-            const params = new URLSearchParams();
-            if (filters.from)
-                params.append('from', filters.from);
-            if (filters.to)
-                params.append('to', filters.to);
-            const requestedSize = typeof filters.size === 'number' ? filters.size : 5000;
-            params.append('size', String(requestedSize));
-            const queryString = params.toString();
-            const url = `http://localhost:8080/logs/services${queryString ? '?' + queryString : ''}`;
-            const response = await fetch(url, {
-                headers: getAuthHeaders()
-            });
+            const url = `${API_BASE_URL}/api/services`;
+            const response = await fetch(url, SESSION_FETCH_OPTIONS);
             if (!response.ok) {
                 console.warn(`Backend error (${response.status}) for ${url}, returning empty service list.`);
                 return [];
@@ -108,10 +93,8 @@ export class ApiClient {
             if (filters.timePreset)
                 params.append('timePreset', filters.timePreset);
             const queryString = params.toString();
-            const url = `http://localhost:8080/logs/metrics${queryString ? '?' + queryString : ''}`;
-            const response = await fetch(url, {
-                headers: getAuthHeaders()
-            });
+            const url = `${API_BASE_URL}/logs/metrics${queryString ? '?' + queryString : ''}`;
+            const response = await fetch(url, SESSION_FETCH_OPTIONS);
             if (!response.ok) {
                 console.warn(`Backend error (${response.status}) for ${url}, returning empty metrics.`);
                 return empty;

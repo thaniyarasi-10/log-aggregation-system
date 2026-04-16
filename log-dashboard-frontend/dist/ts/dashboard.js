@@ -5,6 +5,7 @@ import { DashboardCharts } from './charts.js';
 import { RealtimeManager } from './realtime.js';
 import { Filters } from '../components/filters.js';
 import { ApiClient } from './api.js';
+const API_BASE_URL = 'http://localhost:8080';
 document.addEventListener('DOMContentLoaded', () => {
     const logTable = new LogTable('log-table-body');
     const metrics = new MetricsCards();
@@ -174,13 +175,28 @@ document.addEventListener('DOMContentLoaded', () => {
         if (generation !== refreshGeneration) {
             return;
         }
+        let logsToRender = initialLogs;
+        let metricsFilters = selectedFilters;
         if (!initialLogs.length) {
-            logTable.showEmptyState('No logs found for the selected service and time range.');
-            await syncServices();
-            await refreshMetrics(selectedFilters);
-            return;
+            // If realtime window is empty, fall back to recent historical logs.
+            const historicalFilters = {
+                ...selectedFilters,
+                from: undefined,
+                to: undefined,
+                timePreset: undefined,
+                size: 500
+            };
+            const historicalLogs = await ApiClient.fetchLogs(historicalFilters);
+            if (!historicalLogs.length) {
+                logTable.showEmptyState('No logs found in the selected window or recent history.');
+                await syncServices();
+                await refreshMetrics(selectedFilters);
+                return;
+            }
+            logsToRender = historicalLogs;
+            metricsFilters = historicalFilters;
         }
-        const normalizedInitialLogs = initialLogs.map(log => {
+        const normalizedInitialLogs = logsToRender.map(log => {
             const ms = new Date(log.timestamp).getTime();
             if (Number.isFinite(ms)) {
                 return log;
@@ -199,7 +215,7 @@ document.addEventListener('DOMContentLoaded', () => {
             allLogs.splice(0, allLogs.length - 2000);
         }
         await syncServices();
-        await refreshMetrics(selectedFilters);
+        await refreshMetrics(metricsFilters);
         realtime.seedCursorFromLogs(normalizedInitialLogs);
     };
     // Theme Toggling logic
@@ -237,7 +253,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const appContainer = document.getElementById('app-container');
     const userNameEl = document.getElementById('user-name');
     const logoutBtn = document.getElementById('logout-btn');
+    const authStatusEl = document.getElementById('auth-status');
     // oauth-login-btn is now an anchor tag - no JS listener needed
+    const setAuthStatus = (message) => {
+        if (authStatusEl) {
+            authStatusEl.textContent = message;
+        }
+    };
     const configureSession = async (username) => {
         if (oauthOverlay && appContainer && userNameEl && logoutBtn) {
             userNameEl.textContent = username;
@@ -273,6 +295,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     const failSession = () => {
         if (oauthOverlay && appContainer && logoutBtn) {
+            setAuthStatus('Not signed in. Use Microsoft Entra ID to continue.');
             oauthOverlay.style.display = 'flex';
             appContainer.style.display = 'none';
             logoutBtn.style.display = 'none';
@@ -293,73 +316,40 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     // Auto-login verify
     const verifyAuth = async () => {
-        const urlParams = new URLSearchParams(window.location.search);
-        // ── Error from backend ──────────────────────────────────────────
-        if (urlParams.has('error')) {
-            alert('OAuth Error: ' + urlParams.get('error'));
-            window.history.replaceState({}, document.title, '/');
-            failSession();
-            return;
-        }
-        // ── Fresh token arriving from Google callback ───────────────────
-        // Backend already validated the user — trust & decode directly.
-        // No second API call needed; avoids CORS issues at this point.
-        if (urlParams.has('token')) {
-            const rawToken = urlParams.get('token');
-            localStorage.setItem('logflow_jwt', rawToken);
-            window.history.replaceState({}, document.title, '/'); // Clean URL
-            try {
-                const payload = atob(rawToken.replace(/-/g, '+').replace(/_/g, '/'));
-                const parts = payload.split('|');
-                const name = parts.length > 1 ? parts[1] : parts[0];
-                await configureSession(name || 'User');
-            }
-            catch {
-                await configureSession('User');
-            }
-            return; // Done - dashboard is showing ✅
-        }
-        // ── Returning visitor: check stored token ───────────────────────
-        const token = localStorage.getItem('logflow_jwt');
-        if (!token) {
-            failSession();
-            return;
-        }
+        setAuthStatus('Checking existing session...');
         try {
-            const response = await fetch('http://localhost:8080/api/auth/me', {
-                headers: { 'Authorization': 'Bearer ' + token }
+            const response = await fetch(`${API_BASE_URL}/api/auth/me`, {
+                credentials: 'include'
             });
             if (response.ok) {
                 const data = await response.json();
+                setAuthStatus('Authenticated with Microsoft Entra ID.');
                 await configureSession(data.name || data.email || 'User');
             }
             else {
-                // Token may be stale — clear and show login
-                localStorage.removeItem('logflow_jwt');
                 failSession();
             }
         }
         catch {
-            // Backend unreachable — still show dashboard with stored name
-            try {
-                const payload = atob(token.replace(/-/g, '+').replace(/_/g, '/'));
-                const parts = payload.split('|');
-                await configureSession(parts.length > 1 ? parts[1] : parts[0]);
-            }
-            catch {
-                failSession();
-            }
+            setAuthStatus('Unable to reach backend. Start backend and try again.');
+            failSession();
         }
     };
     // Run automatically on load
     verifyAuth();
     if (logoutBtn) {
         logoutBtn.addEventListener('click', async () => {
-            // Inform backend to end session via /logout mapping or standard flow
-            // Full reload and clear JWT
-            localStorage.removeItem('logflow_jwt');
+            try {
+                await fetch(`${API_BASE_URL}/logout`, {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+            }
+            catch {
+                // Intentionally no-op; UI fallback will still reset below.
+            }
             alertsPanel.stop();
-            window.location.href = '/';
+            failSession();
         });
     }
 });

@@ -610,6 +610,15 @@ public class ElasticRepository {
                         return Optional.of(noAccessQuery());
                 }
 
+                boolean hasWildcardAccess = allowedServices.stream()
+                                .filter(Objects::nonNull)
+                                .map(String::trim)
+                                .anyMatch(value -> "*".equals(value));
+
+                if (hasWildcardAccess) {
+                        return Optional.empty();
+                }
+
                 List<FieldValue> fieldValues = allowedServices.stream()
                                 .filter(this::hasText)
                                 .map(FieldValue::of)
