@@ -25,23 +25,23 @@ public class OAuthUserEmailResolver {
         if (principal instanceof OidcUser oidcUser) {
             String emailsClaim = firstCollectionValue(oidcUser.getAttribute("emails"));
             return firstNonBlank(
-                    oidcUser.getPreferredUsername(),
                     oidcUser.getEmail(),
                     oidcUser.getAttribute("email"),
                     oidcUser.getAttribute("upn"),
-                oidcUser.getAttribute("unique_name"),
-                emailsClaim,
+                    oidcUser.getAttribute("unique_name"),
+                    emailsClaim,
+                    oidcUser.getPreferredUsername(),
                     fallback);
         }
 
         if (principal instanceof OAuth2User oauth2User) {
             String emailsClaim = firstCollectionValue(oauth2User.getAttribute("emails"));
             return firstNonBlank(
-                    oauth2User.getAttribute("preferred_username"),
                     oauth2User.getAttribute("email"),
                     oauth2User.getAttribute("upn"),
-                oauth2User.getAttribute("unique_name"),
-                emailsClaim,
+                    oauth2User.getAttribute("unique_name"),
+                    emailsClaim,
+                    oauth2User.getAttribute("preferred_username"),
                     fallback);
         }
 

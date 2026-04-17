@@ -14,9 +14,29 @@ document.addEventListener('DOMContentLoaded', () => {
     // Accumulator for overall metrics
     const allLogs = [];
     let refreshGeneration = 0;
+    let metricsRefreshGeneration = 0;
     let serviceRefreshTimer = null;
     let metricsRefreshTimer = null;
     let tableRefreshTimer = null;
+    let isAdminUser = false;
+    let lastStableMetrics = null;
+    let currentAdminUsers = [];
+    let currentAdminServices = [];
+    let editingUserId = null;
+    const pendingServiceDeletes = new Set();
+    const pendingUserDeletes = new Set();
+    const pendingUserUpdates = new Set();
+    const hasMetricSignal = (data) => {
+        return data.totalLogs > 0
+            || data.errorCount > 0
+            || data.avgResponseTime > 0
+            || data.p95Latency > 0
+            || data.throughputOverTime.length > 0
+            || data.levelDistribution.length > 0;
+    };
+    const hasRenderableTimeSeries = (data) => {
+        return data.throughputOverTime.length > 0 || data.levelDistribution.length > 0;
+    };
     const syncServices = async () => {
         const services = await ApiClient.fetchServices({ size: 5000 });
         if (services.length > 0) {
@@ -42,7 +62,23 @@ document.addEventListener('DOMContentLoaded', () => {
         return metricFilters;
     };
     const refreshMetrics = async (selectedFilters) => {
+        metricsRefreshGeneration += 1;
+        const generation = metricsRefreshGeneration;
         const metricData = await ApiClient.fetchMetrics(buildMetricsFilters(selectedFilters));
+        if (generation !== metricsRefreshGeneration) {
+            return;
+        }
+        if (hasMetricSignal(metricData) && hasRenderableTimeSeries(metricData)) {
+            lastStableMetrics = metricData;
+            metrics.update(metricData);
+            charts.renderMetrics(metricData);
+            return;
+        }
+        if (lastStableMetrics) {
+            metrics.update(lastStableMetrics);
+            charts.renderMetrics(lastStableMetrics);
+            return;
+        }
         metrics.update(metricData);
         charts.renderMetrics(metricData);
     };
@@ -153,19 +189,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const refreshDashboardData = async (selectedFilters) => {
         refreshGeneration += 1;
         const generation = refreshGeneration;
-        allLogs.length = 0;
-        logTable.clearLogs();
-        metrics.update({
-            totalLogs: 0,
-            errorCount: 0,
-            errorRate: 0,
-            avgResponseTime: 0,
-            p95Latency: 0,
-            bucketInterval: '1m',
-            throughputOverTime: [],
-            levelDistribution: []
-        });
-        charts.clear();
+        const hasVisibleData = allLogs.length > 0;
+        logTable.setSearchTerm(selectedFilters.message);
         realtime.setFilters(selectedFilters, { resetCursor: true, immediateFetch: false });
         const initialLogs = await ApiClient.fetchLogs({
             ...selectedFilters,
@@ -178,6 +203,14 @@ document.addEventListener('DOMContentLoaded', () => {
         let logsToRender = initialLogs;
         let metricsFilters = selectedFilters;
         if (!initialLogs.length) {
+            const lastFetchStatus = ApiClient.getLastLogsFetchStatus();
+            const hasTransientFailure = lastFetchStatus !== null && lastFetchStatus !== 200;
+            if (hasTransientFailure && hasVisibleData) {
+                console.warn(`Skipping table reset due to transient logs fetch failure (status: ${lastFetchStatus}).`);
+                await syncServices();
+                await refreshMetrics(selectedFilters);
+                return;
+            }
             // If realtime window is empty, fall back to recent historical logs.
             const historicalFilters = {
                 ...selectedFilters,
@@ -187,7 +220,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 size: 500
             };
             const historicalLogs = await ApiClient.fetchLogs(historicalFilters);
+            if (generation !== refreshGeneration) {
+                return;
+            }
             if (!historicalLogs.length) {
+                const historicalStatus = ApiClient.getLastLogsFetchStatus();
+                const shouldPreserveExistingData = hasVisibleData
+                    && historicalStatus !== null
+                    && historicalStatus !== 200;
+                if (shouldPreserveExistingData) {
+                    console.warn(`Historical fallback failed (status: ${historicalStatus}); preserving existing table data.`);
+                    await syncServices();
+                    await refreshMetrics(selectedFilters);
+                    return;
+                }
                 logTable.showEmptyState('No logs found in the selected window or recent history.');
                 await syncServices();
                 await refreshMetrics(selectedFilters);
@@ -208,8 +254,9 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         normalizedInitialLogs.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
         filters.updateAvailableOptions(normalizedInitialLogs);
-        logTable.renderLogs(normalizedInitialLogs);
         allLogs.length = 0;
+        logTable.clearLogs();
+        logTable.renderLogs(normalizedInitialLogs);
         normalizedInitialLogs.forEach(log => allLogs.push(log));
         if (allLogs.length > 2000) {
             allLogs.splice(0, allLogs.length - 2000);
@@ -260,12 +307,218 @@ document.addEventListener('DOMContentLoaded', () => {
             authStatusEl.textContent = message;
         }
     };
-    const configureSession = async (username) => {
+    const adminModal = document.getElementById('admin-modal');
+    const adminModalTitle = document.getElementById('admin-modal-title');
+    const adminModalBody = document.getElementById('admin-modal-body');
+    const adminCloseButton = document.getElementById('admin-close-button');
+    const escapeHtml = (value) => value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    const closeAdminModal = () => {
+        if (adminModal) {
+            adminModal.style.display = 'none';
+            adminModal.classList.remove('admin-modal-fullscreen');
+        }
+        document.body.classList.remove('admin-modal-open');
+        editingUserId = null;
+    };
+    const openAdminModal = (title, html) => {
+        if (!adminModal || !adminModalTitle || !adminModalBody) {
+            return;
+        }
+        adminModalTitle.textContent = title;
+        adminModalBody.innerHTML = html;
+        adminModal.classList.add('admin-modal-fullscreen');
+        adminModal.style.display = 'flex';
+        document.body.classList.add('admin-modal-open');
+    };
+    const parseCommaSeparatedValues = (rawValue) => {
+        return rawValue
+            .split(',')
+            .map(value => value.trim())
+            .filter(value => value.length > 0)
+            .filter((value, index, source) => source.findIndex(item => item.toLowerCase() === value.toLowerCase()) === index);
+    };
+    const buildRoleOptions = () => {
+        const defaults = ['ADMIN', 'USER', 'DEVELOPER'];
+        const discoveredRoles = currentAdminUsers
+            .flatMap(user => user.roles)
+            .map(role => role.trim())
+            .filter(role => role.length > 0);
+        return [...new Set([...defaults, ...discoveredRoles])].sort((a, b) => a.localeCompare(b));
+    };
+    const buildServiceOptions = () => {
+        const discoveredFromUsers = currentAdminUsers
+            .flatMap(user => user.services)
+            .map(service => service.trim())
+            .filter(service => service.length > 0);
+        const discoveredFromServices = currentAdminServices
+            .map(service => service.name.trim())
+            .filter(service => service.length > 0);
+        return [...new Set([...discoveredFromUsers, ...discoveredFromServices])].sort((a, b) => a.localeCompare(b));
+    };
+    const renderUsersView = (users) => {
+        currentAdminUsers = users;
+        if (!users.length) {
+            openAdminModal('Users', '<div class="admin-empty-state">No users available.</div>');
+            return;
+        }
+        const roleSuggestions = buildRoleOptions().join(', ');
+        const serviceSuggestions = buildServiceOptions().join(', ');
+        const rows = users.map(user => {
+            const services = user.services.length ? user.services.join(', ') : '-';
+            const roles = user.roles.length ? user.roles.join(', ') : '-';
+            const isEditing = editingUserId === user.id;
+            if (isEditing) {
+                return `
+                    <tr class="admin-editing-row" data-user-row-id="${escapeHtml(user.id)}">
+                        <td>${escapeHtml(user.id)}</td>
+                        <td><input class="form-control admin-inline-input" data-edit-field="username" value="${escapeHtml(user.username)}" maxlength="80"></td>
+                        <td><input class="form-control admin-inline-input" data-edit-field="email" value="${escapeHtml(user.email)}" maxlength="120"></td>
+                        <td>
+                            <input
+                                class="form-control admin-inline-input"
+                                data-edit-field="services"
+                                value="${escapeHtml(user.services.join(', '))}"
+                                placeholder="service-a, service-b"
+                                maxlength="500"
+                            >
+                            <div class="admin-inline-hint">Known services: ${escapeHtml(serviceSuggestions || 'None')}</div>
+                        </td>
+                        <td>
+                            <input
+                                class="form-control admin-inline-input"
+                                data-edit-field="roles"
+                                value="${escapeHtml(user.roles.join(', '))}"
+                                placeholder="ADMIN, USER"
+                                maxlength="250"
+                            >
+                            <div class="admin-inline-hint">Known roles: ${escapeHtml(roleSuggestions || 'None')}</div>
+                        </td>
+                        <td>
+                            <button class="btn" data-save-user-id="${escapeHtml(user.id)}">Save</button>
+                            <button class="btn" data-cancel-user-id="${escapeHtml(user.id)}">Cancel</button>
+                        </td>
+                    </tr>
+                `;
+            }
+            return `
+                <tr>
+                    <td>${escapeHtml(user.id)}</td>
+                    <td>${escapeHtml(user.username)}</td>
+                    <td>${escapeHtml(user.email)}</td>
+                    <td>${escapeHtml(services)}</td>
+                    <td>${escapeHtml(roles)}</td>
+                    <td>
+                        <button class="btn" data-edit-user-id="${escapeHtml(user.id)}">Edit</button>
+                        <button class="btn admin-danger-btn" data-delete-user-id="${escapeHtml(user.id)}">Delete</button>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+        openAdminModal('Users', `
+            <div id="admin-user-message" class="admin-status-message"></div>
+            <div class="admin-table-wrap">
+                <table class="admin-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Name</th>
+                            <th>Email</th>
+                            <th>Service</th>
+                            <th>Role</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+            `);
+    };
+    const renderServicesView = (services) => {
+        currentAdminServices = services;
+        const rows = services.length
+            ? services.map(service => `
+                <tr>
+                    <td>${escapeHtml(service.name)}</td>
+                    <td>${escapeHtml(service.description || '-')}</td>
+                    <td>
+                        <button class="btn admin-danger-btn" data-delete-service-id="${escapeHtml(service.id)}">Delete</button>
+                    </td>
+                </tr>
+            `).join('')
+            : '<tr><td colspan="3" class="admin-empty-cell">No active services.</td></tr>';
+        openAdminModal('Services', `
+            <form id="admin-service-form" class="admin-service-form">
+                <input id="admin-service-name" class="form-control" placeholder="Service name" maxlength="100" required>
+                <input id="admin-service-description" class="form-control" placeholder="Description" maxlength="255">
+                <button type="submit" class="btn">Add Service</button>
+            </form>
+            <div id="admin-service-message" class="admin-status-message"></div>
+            <div class="admin-table-wrap">
+                <table class="admin-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Description</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+            `);
+    };
+    const loadUsersView = async () => {
+        if (!isAdminUser) {
+            return;
+        }
+        if (!currentAdminServices.length) {
+            currentAdminServices = await ApiClient.fetchAdminServices();
+        }
+        openAdminModal('Users', '<div class="admin-empty-state">Loading users...</div>');
+        const users = await ApiClient.fetchAdminUsers();
+        renderUsersView(users);
+    };
+    const loadServicesView = async () => {
+        if (!isAdminUser) {
+            return;
+        }
+        openAdminModal('Services', '<div class="admin-empty-state">Loading services...</div>');
+        const services = await ApiClient.fetchAdminServices();
+        renderServicesView(services);
+    };
+    const updateManagementUI = (auth) => {
+        const container = document.getElementById('management-status');
+        const usersBadge = document.getElementById('manage-users-badge');
+        const servicesBadge = document.getElementById('manage-services-badge');
+        if (!container || !usersBadge || !servicesBadge) {
+            return;
+        }
+        const canManageUsers = Boolean(auth.canManageUsers);
+        const canManageServices = Boolean(auth.canManageServices);
+        const isRoleAdmin = String(auth.role || '').toUpperCase() === 'ADMIN';
+        isAdminUser = isRoleAdmin || canManageUsers || canManageServices;
+        if (!isAdminUser) {
+            container.style.display = 'none';
+            return;
+        }
+        usersBadge.textContent = 'Users: View';
+        servicesBadge.textContent = 'Services: View';
+        usersBadge.disabled = !canManageUsers;
+        servicesBadge.disabled = !canManageServices;
+        container.style.display = 'flex';
+    };
+    const configureSession = async (auth) => {
         if (oauthOverlay && appContainer && userNameEl && logoutBtn) {
-            userNameEl.textContent = username;
+            userNameEl.textContent = auth.name || auth.email || 'User';
             oauthOverlay.style.display = 'none';
             appContainer.style.display = 'flex';
             logoutBtn.style.display = 'block';
+            updateManagementUI(auth);
             // Populate service options immediately from full historical data.
             await syncServices();
             // Always bootstrap from persisted Elasticsearch logs before live polling.
@@ -314,6 +567,200 @@ document.addEventListener('DOMContentLoaded', () => {
             alertsPanel.stop();
         }
     };
+    if (adminCloseButton && adminModal) {
+        adminCloseButton.addEventListener('click', closeAdminModal);
+        adminModal.addEventListener('click', (event) => {
+            if (event.target === adminModal) {
+                closeAdminModal();
+            }
+        });
+    }
+    const usersBadge = document.getElementById('manage-users-badge');
+    const servicesBadge = document.getElementById('manage-services-badge');
+    if (usersBadge) {
+        usersBadge.addEventListener('click', () => {
+            void loadUsersView();
+        });
+    }
+    if (servicesBadge) {
+        servicesBadge.addEventListener('click', () => {
+            void loadServicesView();
+        });
+    }
+    if (adminModalBody) {
+        adminModalBody.addEventListener('submit', (event) => {
+            const form = event.target;
+            if (!form || form.id !== 'admin-service-form') {
+                return;
+            }
+            event.preventDefault();
+            const nameInput = document.getElementById('admin-service-name');
+            const descriptionInput = document.getElementById('admin-service-description');
+            const messageEl = document.getElementById('admin-service-message');
+            if (!nameInput) {
+                return;
+            }
+            const name = nameInput.value.trim();
+            const description = descriptionInput?.value.trim() || '';
+            if (!name) {
+                if (messageEl) {
+                    messageEl.textContent = 'Service name is required.';
+                    messageEl.className = 'admin-status-message admin-status-error';
+                }
+                return;
+            }
+            void (async () => {
+                const result = await ApiClient.createService(name, description);
+                if (!result.ok) {
+                    if (messageEl) {
+                        messageEl.textContent = result.message || 'Unable to add service.';
+                        messageEl.className = 'admin-status-message admin-status-error';
+                    }
+                    return;
+                }
+                if (messageEl) {
+                    messageEl.textContent = 'Service added successfully.';
+                    messageEl.className = 'admin-status-message admin-status-success';
+                }
+                nameInput.value = '';
+                if (descriptionInput) {
+                    descriptionInput.value = '';
+                }
+                await syncServices();
+                await loadServicesView();
+            })();
+        });
+        adminModalBody.addEventListener('click', (event) => {
+            const target = event.target;
+            if (!target) {
+                return;
+            }
+            const serviceId = target.getAttribute('data-delete-service-id');
+            if (serviceId) {
+                if (pendingServiceDeletes.has(serviceId)) {
+                    return;
+                }
+                if (!window.confirm('Delete this service? This action cannot be undone.')) {
+                    return;
+                }
+                pendingServiceDeletes.add(serviceId);
+                const button = target;
+                button.disabled = true;
+                void (async () => {
+                    const result = await ApiClient.deleteService(serviceId);
+                    const messageEl = document.getElementById('admin-service-message');
+                    if (!result.ok) {
+                        if (messageEl) {
+                            messageEl.textContent = result.message || 'Unable to delete service.';
+                            messageEl.className = 'admin-status-message admin-status-error';
+                        }
+                        button.disabled = false;
+                        pendingServiceDeletes.delete(serviceId);
+                        return;
+                    }
+                    currentAdminServices = currentAdminServices.filter(service => service.id !== serviceId);
+                    renderServicesView(currentAdminServices);
+                    await syncServices();
+                    pendingServiceDeletes.delete(serviceId);
+                })();
+                return;
+            }
+            const userId = target.getAttribute('data-delete-user-id');
+            if (userId) {
+                if (pendingUserDeletes.has(userId)) {
+                    return;
+                }
+                if (!window.confirm('Delete this user? This action will deactivate the user.')) {
+                    return;
+                }
+                pendingUserDeletes.add(userId);
+                const button = target;
+                button.disabled = true;
+                void (async () => {
+                    const result = await ApiClient.deleteAdminUser(userId);
+                    if (!result.ok) {
+                        window.alert(result.message || 'Unable to delete user.');
+                        button.disabled = false;
+                        pendingUserDeletes.delete(userId);
+                        return;
+                    }
+                    currentAdminUsers = currentAdminUsers.filter(user => user.id !== userId);
+                    renderUsersView(currentAdminUsers);
+                    pendingUserDeletes.delete(userId);
+                })();
+                return;
+            }
+            const editUserId = target.getAttribute('data-edit-user-id');
+            if (editUserId) {
+                editingUserId = editUserId;
+                renderUsersView(currentAdminUsers);
+                return;
+            }
+            const cancelUserId = target.getAttribute('data-cancel-user-id');
+            if (cancelUserId) {
+                editingUserId = null;
+                renderUsersView(currentAdminUsers);
+                return;
+            }
+            const saveUserId = target.getAttribute('data-save-user-id');
+            if (saveUserId) {
+                if (pendingUserUpdates.has(saveUserId)) {
+                    return;
+                }
+                const row = target.closest('tr');
+                if (!row) {
+                    return;
+                }
+                const usernameInput = row.querySelector('[data-edit-field="username"]');
+                const emailInput = row.querySelector('[data-edit-field="email"]');
+                const servicesInput = row.querySelector('[data-edit-field="services"]');
+                const rolesInput = row.querySelector('[data-edit-field="roles"]');
+                const userMessageEl = document.getElementById('admin-user-message');
+                if (!usernameInput || !emailInput || !servicesInput || !rolesInput) {
+                    return;
+                }
+                const username = usernameInput.value.trim();
+                const email = emailInput.value.trim();
+                const services = parseCommaSeparatedValues(servicesInput.value);
+                const roles = parseCommaSeparatedValues(rolesInput.value);
+                if (!username || !email) {
+                    if (userMessageEl) {
+                        userMessageEl.textContent = 'Username and email are required.';
+                        userMessageEl.className = 'admin-status-message admin-status-error';
+                    }
+                    return;
+                }
+                pendingUserUpdates.add(saveUserId);
+                const button = target;
+                button.disabled = true;
+                void (async () => {
+                    const result = await ApiClient.updateAdminUser(saveUserId, {
+                        username,
+                        email,
+                        services,
+                        roles
+                    });
+                    if (!result.ok || !result.data) {
+                        if (userMessageEl) {
+                            userMessageEl.textContent = result.message || 'Unable to update user.';
+                            userMessageEl.className = 'admin-status-message admin-status-error';
+                        }
+                        button.disabled = false;
+                        pendingUserUpdates.delete(saveUserId);
+                        return;
+                    }
+                    editingUserId = null;
+                    currentAdminUsers = currentAdminUsers.map(user => user.id === saveUserId ? result.data : user);
+                    if (userMessageEl) {
+                        userMessageEl.textContent = 'User updated successfully.';
+                        userMessageEl.className = 'admin-status-message admin-status-success';
+                    }
+                    renderUsersView(currentAdminUsers);
+                    pendingUserUpdates.delete(saveUserId);
+                })();
+            }
+        });
+    }
     // Auto-login verify
     const verifyAuth = async () => {
         setAuthStatus('Checking existing session...');
@@ -324,7 +771,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (response.ok) {
                 const data = await response.json();
                 setAuthStatus('Authenticated with Microsoft Entra ID.');
-                await configureSession(data.name || data.email || 'User');
+                await configureSession(data);
             }
             else {
                 failSession();

@@ -51,12 +51,7 @@ public final class AuthRequestContext {
         UserRole role = isAdmin ? UserRole.ADMIN : UserRole.USER;
 
         List<String> allowedServices = extractAllowedServices(authentication.getPrincipal());
-        if (role == UserRole.USER && allowedServices.isEmpty()) {
-            // Keep the app usable by default until explicit service claims are configured.
-            allowedServices = List.of("*");
-        }
-
-        return new AuthenticatedUserContext(email, role, allowedServices);
+        return new AuthenticatedUserContext(email, role, allowedServices, List.of());
     }
 
     private static String resolveEmail(Object principal, String fallback) {

@@ -2,9 +2,11 @@ package com.kovanlabs.logcontroller.controller;
 
 import com.kovanlabs.logcontroller.model.Alert;
 import com.kovanlabs.logcontroller.auth.AuthenticatedUserContext;
+import com.kovanlabs.logcontroller.auth.PermissionName;
 import com.kovanlabs.logcontroller.service.AlertService;
 import com.kovanlabs.logcontroller.service.ServiceAccessAuthorizationService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -16,6 +18,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+
+import static org.springframework.http.HttpStatus.FORBIDDEN;
 
 @RestController
 @CrossOrigin(origins = "http://localhost:3000", allowedHeaders = "*", methods = {RequestMethod.GET, RequestMethod.OPTIONS})
@@ -33,6 +37,9 @@ public class AlertController {
     @GetMapping
     public Map<String, List<Map<String, Object>>> getAlerts() {
         AuthenticatedUserContext context = accessAuthorizationService.getCurrentUserAccessContext();
+        if (!context.isAdmin() && !context.hasPermission(PermissionName.ALERTS_READ)) {
+            throw new ResponseStatusException(FORBIDDEN, "Missing required permission: " + PermissionName.ALERTS_READ);
+        }
 
         return alertService.getRecentAlertsGroupedByService().entrySet().stream()
                 .filter(entry -> context.isAdmin() || context.isServiceAllowed(entry.getKey()))

@@ -623,3 +623,134 @@ body {
     }
 }
 
+.admin-modal-content {
+    width: 900px;
+    max-width: 96%;
+}
+
+body.admin-modal-open {
+    overflow: hidden;
+}
+
+.modal.admin-modal-fullscreen {
+    align-items: stretch;
+    justify-content: stretch;
+    padding: 1rem;
+}
+
+.modal.admin-modal-fullscreen .admin-modal-content {
+    width: 100%;
+    max-width: none;
+    height: calc(100vh - 2rem);
+    border-radius: 14px;
+}
+
+.modal.admin-modal-fullscreen .admin-modal-body {
+    height: 100%;
+}
+
+.admin-modal-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.admin-editing-row {
+    background: rgba(59, 130, 246, 0.08);
+}
+
+.admin-inline-input {
+    min-width: 180px;
+}
+
+.admin-inline-hint {
+    margin-top: 0.4rem;
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    line-height: 1.3;
+}
+
+.admin-service-form {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 0.5rem;
+}
+
+.admin-status-message {
+    min-height: 1.2rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.admin-status-success {
+    color: var(--color-info);
+}
+
+.admin-status-error {
+    color: var(--color-error);
+}
+
+.admin-empty-state {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.admin-table-wrap {
+    overflow: auto;
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+}
+
+.admin-table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 700px;
+}
+
+.admin-table th,
+.admin-table td {
+    text-align: left;
+    padding: 0.65rem 0.75rem;
+    border-bottom: 1px solid var(--table-row-border);
+    font-size: 0.85rem;
+}
+
+.admin-table th {
+    background: var(--table-header-bg);
+    color: var(--text-secondary);
+    position: sticky;
+    top: 0;
+}
+
+.admin-empty-cell {
+    color: var(--text-secondary);
+    text-align: center;
+}
+
+.admin-danger-btn {
+    color: var(--color-error);
+    border-color: rgba(220, 38, 38, 0.35);
+}
+
+.log-search-hit {
+    background: rgba(59, 130, 246, 0.24);
+    color: inherit;
+    padding: 0 2px;
+    border-radius: 3px;
+}
+
+@media (max-width: 900px) {
+    .admin-service-form {
+        grid-template-columns: 1fr;
+    }
+
+    .modal.admin-modal-fullscreen {
+        padding: 0;
+    }
+
+    .modal.admin-modal-fullscreen .admin-modal-content {
+        height: 100vh;
+        border-radius: 0;
+    }
+}
+

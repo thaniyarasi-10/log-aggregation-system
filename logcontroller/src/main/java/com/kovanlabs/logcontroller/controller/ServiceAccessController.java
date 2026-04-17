@@ -11,7 +11,8 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.kovanlabs.logcontroller.model.AppService;
+import com.kovanlabs.logcontroller.auth.AuthenticatedUserContext;
+import com.kovanlabs.logcontroller.repository.ElasticRepository;
 import com.kovanlabs.logcontroller.service.OAuthUserEmailResolver;
 import com.kovanlabs.logcontroller.service.ServiceAccessAuthorizationService;
 
@@ -23,12 +24,15 @@ public class ServiceAccessController {
 
     private final ServiceAccessAuthorizationService authorizationService;
     private final OAuthUserEmailResolver emailResolver;
+    private final ElasticRepository elasticRepository;
 
     public ServiceAccessController(
             ServiceAccessAuthorizationService authorizationService,
-            OAuthUserEmailResolver emailResolver) {
+            OAuthUserEmailResolver emailResolver,
+            ElasticRepository elasticRepository) {
         this.authorizationService = authorizationService;
         this.emailResolver = emailResolver;
+        this.elasticRepository = elasticRepository;
     }
 
     @GetMapping
@@ -39,13 +43,15 @@ public class ServiceAccessController {
             }
 
             String email = emailResolver.getCurrentUserEmail().orElse("");
-            List<String> names = authorizationService.getAccessibleServices(email).stream()
-                    .map(AppService::getName)
+        AuthenticatedUserContext context = authorizationService.getUserAccessContext(email);
+
+        List<String> names = elasticRepository.getDistinctServices(null, null, 5000, context).stream()
                     .filter(Objects::nonNull)
                     .map(String::trim)
                     .filter(name -> !name.isBlank())
                     .distinct()
                     .toList();
+
             return ResponseEntity.ok(names);
         } catch (RuntimeException ex) {
             LOGGER.warn("Unable to resolve DB-backed services. Returning empty list: {}", ex.getMessage());

@@ -15,9 +15,18 @@ import org.springframework.web.bind.annotation.RestController;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
+import com.kovanlabs.logcontroller.auth.AuthenticatedUserContext;
+import com.kovanlabs.logcontroller.service.ServiceAccessAuthorizationService;
+
 @RestController
 @CrossOrigin(origins = "http://localhost:3000", allowCredentials = "true", allowedHeaders = "*")
 public class OAuthController {
+
+    private final ServiceAccessAuthorizationService authorizationService;
+
+    public OAuthController(ServiceAccessAuthorizationService authorizationService) {
+        this.authorizationService = authorizationService;
+    }
 
     @GetMapping("/api/auth/login")
     public void login(HttpServletResponse response) throws java.io.IOException {
@@ -60,6 +69,14 @@ public class OAuthController {
             payload.put("name", authentication.getName());
             payload.put("email", authentication.getName());
         }
+
+        String email = (String) payload.getOrDefault("email", authentication.getName());
+        AuthenticatedUserContext accessContext = authorizationService.getUserAccessContext(email);
+        payload.put("role", accessContext.role().name());
+        payload.put("permissions", accessContext.permissions());
+        payload.put("allowedServices", accessContext.allowedServices());
+        payload.put("canManageUsers", authorizationService.canManageUsers(accessContext));
+        payload.put("canManageServices", authorizationService.canManageServices(accessContext));
 
         return ResponseEntity.ok(payload);
     }

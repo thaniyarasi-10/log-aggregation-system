@@ -6,6 +6,7 @@ export class LogTable {
     private maxLogs: number = 500;
     private autoScroll: boolean = true;
     private logs: LogEvent[] = [];
+    private searchTerm: string = '';
 
     constructor(containerId: string) {
         const el = document.getElementById(containerId);
@@ -15,6 +16,10 @@ export class LogTable {
 
     public setAutoScroll(value: boolean) {
         this.autoScroll = value;
+    }
+
+    public setSearchTerm(value?: string) {
+        this.searchTerm = (value || '').trim();
     }
 
     public renderLogs(newLogs: LogEvent[]) {
@@ -74,7 +79,7 @@ export class LogTable {
             <td>${escapeHtml(log.service)}</td>
             <td><span class="tag ${getLevelClass(log.level)}">${escapeHtml(log.level)}</span></td>
             <td>
-                <div class="message-cell">${escapeHtml(log.message)}</div>
+                <div class="message-cell">${this.getHighlightedMessage(log.message)}</div>
             </td>
             <td>${log.statusCode || '-'}</td>
             <td>${log.responseTime ? log.responseTime + 'ms' : '-'}</td>
@@ -89,5 +94,30 @@ export class LogTable {
     private showModalWrapper(log: LogEvent) {
         const event = new CustomEvent('showLogModal', { detail: log });
         document.dispatchEvent(event);
+    }
+
+    private getHighlightedMessage(message: string): string {
+        if (!this.searchTerm) {
+            return escapeHtml(message);
+        }
+
+        const regex = new RegExp(this.escapeRegex(this.searchTerm), 'ig');
+        let result = '';
+        let lastIndex = 0;
+
+        for (const match of message.matchAll(regex)) {
+            const index = match.index ?? 0;
+            const value = match[0] || '';
+            result += escapeHtml(message.slice(lastIndex, index));
+            result += `<mark class="log-search-hit">${escapeHtml(value)}</mark>`;
+            lastIndex = index + value.length;
+        }
+
+        result += escapeHtml(message.slice(lastIndex));
+        return result;
+    }
+
+    private escapeRegex(value: string): string {
+        return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 }

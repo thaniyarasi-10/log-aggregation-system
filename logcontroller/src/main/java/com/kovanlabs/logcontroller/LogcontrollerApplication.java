@@ -11,6 +11,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 public class LogcontrollerApplication {
 
     public static void main(String[] args) {
+
         SpringApplication.run(LogcontrollerApplication.class, args);
     }
 }

@@ -10,27 +10,24 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
 @Entity
-@Table(name = "\"service\"")
-public class AppService {
+@Table(name = "\"permission\"")
+public class AppPermission {
 
     @Id
     @GeneratedValue
     private UUID id;
 
-    @Column(name = "name", nullable = false, unique = true)
+    @Column(name = "name", nullable = false, unique = true, length = 100)
     private String name;
+
+    @Column(name = "resource", nullable = false, length = 50)
+    private String resource;
 
     @Column(name = "description")
     private String description;
 
-    @Column(name = "is_active", nullable = false)
-    private boolean isActive = true;
-
     @Column(name = "created_at")
     private LocalDateTime createdAt;
-
-    @Column(name = "updated_at")
-    private LocalDateTime updatedAt;
 
     public UUID getId() {
         return id;
@@ -48,6 +45,14 @@ public class AppService {
         this.name = name;
     }
 
+    public String getResource() {
+        return resource;
+    }
+
+    public void setResource(String resource) {
+        this.resource = resource;
+    }
+
     public String getDescription() {
         return description;
     }
@@ -56,27 +61,11 @@ public class AppService {
         this.description = description;
     }
 
-    public boolean isActive() {
-        return isActive;
-    }
-
-    public void setActive(boolean active) {
-        isActive = active;
-    }
-
     public LocalDateTime getCreatedAt() {
         return createdAt;
     }
 
     public void setCreatedAt(LocalDateTime createdAt) {
         this.createdAt = createdAt;
-    }
-
-    public LocalDateTime getUpdatedAt() {
-        return updatedAt;
-    }
-
-    public void setUpdatedAt(LocalDateTime updatedAt) {
-        this.updatedAt = updatedAt;
     }
 }

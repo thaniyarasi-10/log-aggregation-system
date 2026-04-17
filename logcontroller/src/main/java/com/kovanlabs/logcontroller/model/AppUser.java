@@ -1,39 +1,52 @@
 package com.kovanlabs.logcontroller.model;
 
 import java.time.LocalDateTime;
-import java.util.UUID;
 
 import jakarta.persistence.Column;
-import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
 @Entity
-@Table(name = "users")
+@Table(name = "\"user\"")
 public class AppUser {
 
     @Id
-    @GeneratedValue
-    private UUID id;
+    @Column(name = "id", nullable = false, length = 50)
+    private String id;
+
+    @Column(name = "username", nullable = false, unique = true, length = 50)
+    private String username;
 
     @Column(name = "email", nullable = false, unique = true)
     private String email;
 
-    @Convert(converter = UserAccountRoleConverter.class)
-    @Column(name = "role", nullable = false)
-    private UserAccountRole role;
+    @Column(name = "is_active", nullable = false)
+    private boolean isActive = true;
 
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
-    public UUID getId() {
+    @Column(name = "updated_at")
+    private LocalDateTime updatedAt;
+
+    @Column(name = "last_login_at")
+    private LocalDateTime lastLoginAt;
+
+    public String getId() {
         return id;
     }
 
-    public void setId(UUID id) {
+    public void setId(String id) {
         this.id = id;
+    }
+
+    public String getUsername() {
+        return username;
+    }
+
+    public void setUsername(String username) {
+        this.username = username;
     }
 
     public String getEmail() {
@@ -44,12 +57,12 @@ public class AppUser {
         this.email = email;
     }
 
-    public UserAccountRole getRole() {
-        return role;
+    public boolean isActive() {
+        return isActive;
     }
 
-    public void setRole(UserAccountRole role) {
-        this.role = role;
+    public void setActive(boolean active) {
+        isActive = active;
     }
 
     public LocalDateTime getCreatedAt() {
@@ -58,5 +71,21 @@ public class AppUser {
 
     public void setCreatedAt(LocalDateTime createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public LocalDateTime getUpdatedAt() {
+        return updatedAt;
+    }
+
+    public void setUpdatedAt(LocalDateTime updatedAt) {
+        this.updatedAt = updatedAt;
+    }
+
+    public LocalDateTime getLastLoginAt() {
+        return lastLoginAt;
+    }
+
+    public void setLastLoginAt(LocalDateTime lastLoginAt) {
+        this.lastLoginAt = lastLoginAt;
     }
 }

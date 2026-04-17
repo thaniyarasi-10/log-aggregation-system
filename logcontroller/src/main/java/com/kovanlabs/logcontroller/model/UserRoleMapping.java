@@ -7,14 +7,14 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
-import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
 @Entity
-@Table(name = "user_service")
-public class UserServiceMapping {
+@Table(name = "user_role")
+public class UserRoleMapping {
 
     @Id
     @GeneratedValue
@@ -25,11 +25,11 @@ public class UserServiceMapping {
     private AppUser user;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "service_id", nullable = false)
-    private AppService service;
+    @JoinColumn(name = "role_id", nullable = false)
+    private AppRole role;
 
-    @Column(name = "created_at")
-    private LocalDateTime createdAt;
+    @Column(name = "assigned_at")
+    private LocalDateTime assignedAt;
 
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
@@ -50,20 +50,20 @@ public class UserServiceMapping {
         this.user = user;
     }
 
-    public AppService getService() {
-        return service;
+    public AppRole getRole() {
+        return role;
     }
 
-    public void setService(AppService service) {
-        this.service = service;
+    public void setRole(AppRole role) {
+        this.role = role;
     }
 
-    public LocalDateTime getCreatedAt() {
-        return createdAt;
+    public LocalDateTime getAssignedAt() {
+        return assignedAt;
     }
 
-    public void setCreatedAt(LocalDateTime createdAt) {
-        this.createdAt = createdAt;
+    public void setAssignedAt(LocalDateTime assignedAt) {
+        this.assignedAt = assignedAt;
     }
 
     public LocalDateTime getUpdatedAt() {

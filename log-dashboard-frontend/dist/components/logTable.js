@@ -4,6 +4,7 @@ export class LogTable {
     maxLogs = 500;
     autoScroll = true;
     logs = [];
+    searchTerm = '';
     constructor(containerId) {
         const el = document.getElementById(containerId);
         if (!el)
@@ -12,6 +13,9 @@ export class LogTable {
     }
     setAutoScroll(value) {
         this.autoScroll = value;
+    }
+    setSearchTerm(value) {
+        this.searchTerm = (value || '').trim();
     }
     renderLogs(newLogs) {
         const firstRow = this.container.firstElementChild;
@@ -62,7 +66,7 @@ export class LogTable {
             <td>${escapeHtml(log.service)}</td>
             <td><span class="tag ${getLevelClass(log.level)}">${escapeHtml(log.level)}</span></td>
             <td>
-                <div class="message-cell">${escapeHtml(log.message)}</div>
+                <div class="message-cell">${this.getHighlightedMessage(log.message)}</div>
             </td>
             <td>${log.statusCode || '-'}</td>
             <td>${log.responseTime ? log.responseTime + 'ms' : '-'}</td>
@@ -74,5 +78,25 @@ export class LogTable {
     showModalWrapper(log) {
         const event = new CustomEvent('showLogModal', { detail: log });
         document.dispatchEvent(event);
+    }
+    getHighlightedMessage(message) {
+        if (!this.searchTerm) {
+            return escapeHtml(message);
+        }
+        const regex = new RegExp(this.escapeRegex(this.searchTerm), 'ig');
+        let result = '';
+        let lastIndex = 0;
+        for (const match of message.matchAll(regex)) {
+            const index = match.index ?? 0;
+            const value = match[0] || '';
+            result += escapeHtml(message.slice(lastIndex, index));
+            result += `<mark class="log-search-hit">${escapeHtml(value)}</mark>`;
+            lastIndex = index + value.length;
+        }
+        result += escapeHtml(message.slice(lastIndex));
+        return result;
+    }
+    escapeRegex(value) {
+        return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 }

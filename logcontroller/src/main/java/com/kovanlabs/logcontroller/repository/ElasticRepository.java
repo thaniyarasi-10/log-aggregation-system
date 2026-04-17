@@ -23,14 +23,15 @@ import com.kovanlabs.logcontroller.model.LogEvent;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.FieldValue;
 import co.elastic.clients.elasticsearch._types.SortOrder;
-import co.elastic.clients.elasticsearch._types.query_dsl.QueryBuilders;
 import co.elastic.clients.elasticsearch._types.Time;
 import co.elastic.clients.elasticsearch._types.aggregations.FieldDateMath;
 import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.MatchQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
+import co.elastic.clients.elasticsearch._types.query_dsl.QueryBuilders;
 import co.elastic.clients.elasticsearch._types.query_dsl.RangeQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.TermQuery;
+import co.elastic.clients.elasticsearch._types.query_dsl.WildcardQuery;
 import co.elastic.clients.elasticsearch.core.IndexRequest;
 import co.elastic.clients.elasticsearch.core.SearchRequest;
 import co.elastic.clients.elasticsearch.core.SearchResponse;
@@ -43,7 +44,7 @@ public class ElasticRepository {
         private static final Logger LOGGER = LoggerFactory.getLogger(ElasticRepository.class);
 
     private static final String TIMESTAMP_FIELD = "timestamp";
-        private static final String METRICS_TIMESTAMP_FIELD = TIMESTAMP_FIELD;
+    private static final String METRICS_TIMESTAMP_FIELD = "timestamp";
     private static final String LEVEL_KEYWORD   = "level.keyword";
     private static final String SERVICE_KEYWORD = "service.keyword";
                 private static final String PROJECT_KEYWORD = "project.keyword";
@@ -240,7 +241,7 @@ public class ElasticRepository {
                 .query(boolQuery._toQuery())
                 .size(0)
                 .aggregations(AGG_TOTAL_COUNT, a -> a
-                        .valueCount(v -> v.field(SERVICE_KEYWORD)))
+                        .valueCount(v -> v.field("timestamp")))
                 .aggregations(AGG_ERROR_COUNT, a -> a
                         .filter(f -> f
                                 .term(t -> t
@@ -540,27 +541,19 @@ public class ElasticRepository {
 
                         Optional.ofNullable(environment)
                                 .filter(env -> !env.isBlank())
-                                .map(env -> TermQuery.of(t -> t
-                                        .field(ENV_KEYWORD)
-                                        .value(env))._toQuery()),
+                                .map(env -> wildcardKeywordQuery(ENV_KEYWORD, env)),
 
                         Optional.ofNullable(level)
                                 .filter(l -> !l.isEmpty())
-                                .map(l -> TermQuery.of(t -> t
-                                        .field(LEVEL_KEYWORD)
-                                        .value(l))._toQuery()),
+                                .map(l -> wildcardKeywordQuery(LEVEL_KEYWORD, l)),
 
                         Optional.ofNullable(traceId)
                                 .filter(tid -> !tid.isBlank())
-                                .map(tid -> TermQuery.of(t -> t
-                                        .field(TRACE_KEYWORD)
-                                        .value(tid))._toQuery()),
+                                .map(tid -> wildcardKeywordQuery(TRACE_KEYWORD, tid)),
 
                         Optional.ofNullable(message)
                                 .filter(msg -> !msg.isBlank())
-                                .map(msg -> MatchQuery.of(m -> m
-                                        .field(MESSAGE_FIELD)
-                                        .query(msg))._toQuery())
+                                .map(this::buildMessageQuery)
                 )
                 .filter(Optional::isPresent)
                 .map(Optional::get)
@@ -570,8 +563,8 @@ public class ElasticRepository {
 
                 filters.add(rangeQuery(bounds));
 
-        return filters;
-    }
+                return filters;
+        }
 
         private Optional<Query> buildServiceFilter(String service, AuthenticatedUserContext accessContext) {
                 if (!hasText(service) || "All Services".equalsIgnoreCase(service)) {
@@ -583,21 +576,46 @@ public class ElasticRepository {
                         return Optional.of(noAccessQuery());
                 }
 
-                Query serviceQuery = TermQuery.of(t -> t
-                                .field(SERVICE_KEYWORD)
-                                .value(service))._toQuery();
+                return Optional.of(wildcardKeywordQuery(SERVICE_KEYWORD, service));
+        }
 
-                Query projectQuery = TermQuery.of(t -> t
-                                .field(PROJECT_KEYWORD)
-                                .value(service))._toQuery();
-
-                Query combinedQuery = BoolQuery.of(b -> b
-                                .should(serviceQuery)
-                                .should(projectQuery)
-                                .minimumShouldMatch("1")
+        private Query buildMessageQuery(String message) {
+                String sanitized = sanitizeForWildcard(message);
+                Query wildcardOnKeyword = WildcardQuery.of(w -> w
+                                .field("message.keyword")
+                                .value("*" + sanitized + "*")
+                                .caseInsensitive(true)
                 )._toQuery();
 
-                return Optional.of(combinedQuery);
+                Query fuzzyText = MatchQuery.of(m -> m
+                                .field(MESSAGE_FIELD)
+                                .query(message)
+                )._toQuery();
+
+                return BoolQuery.of(b -> b
+                                .should(wildcardOnKeyword)
+                                .should(fuzzyText)
+                                .minimumShouldMatch("1")
+                )._toQuery();
+        }
+
+        private Query wildcardKeywordQuery(String field, String value) {
+                String sanitized = sanitizeForWildcard(value);
+                return WildcardQuery.of(w -> w
+                                .field(field)
+                                .value("*" + sanitized + "*")
+                                .caseInsensitive(true)
+                )._toQuery();
+        }
+
+        private String sanitizeForWildcard(String raw) {
+                if (raw == null) {
+                        return "";
+                }
+                return raw.trim()
+                                .replace("\\", "\\\\")
+                                .replace("*", "\\*")
+                                .replace("?", "\\?");
         }
 
         private Optional<Query> buildAccessFilter(AuthenticatedUserContext accessContext) {
@@ -611,38 +629,27 @@ public class ElasticRepository {
                 }
 
                 boolean hasWildcardAccess = allowedServices.stream()
-                                .filter(Objects::nonNull)
-                                .map(String::trim)
-                                .anyMatch(value -> "*".equals(value));
+                        .filter(Objects::nonNull)
+                        .map(String::trim)
+                        .anyMatch(value -> "*".equals(value));
 
                 if (hasWildcardAccess) {
                         return Optional.empty();
                 }
 
                 List<FieldValue> fieldValues = allowedServices.stream()
-                                .filter(this::hasText)
-                                .map(FieldValue::of)
-                                .toList();
+                        .filter(this::hasText)
+                        .map(FieldValue::of)
+                        .toList();
 
                 if (fieldValues.isEmpty()) {
                         return Optional.of(noAccessQuery());
                 }
 
-                Query serviceTerms = QueryBuilders.terms()
-                                .field(SERVICE_KEYWORD)
-                                .terms(v -> v.value(fieldValues))
-                                .build()._toQuery();
-
-                Query projectTerms = QueryBuilders.terms()
-                                .field(PROJECT_KEYWORD)
-                                .terms(v -> v.value(fieldValues))
-                                .build()._toQuery();
-
-                return Optional.of(BoolQuery.of(b -> b
-                                .should(serviceTerms)
-                                .should(projectTerms)
-                                .minimumShouldMatch("1")
-                )._toQuery());
+                return Optional.of(QueryBuilders.terms()
+                        .field(SERVICE_KEYWORD)
+                        .terms(v -> v.value(fieldValues))
+                        .build()._toQuery());
         }
 
         private Query noAccessQuery() {
@@ -652,26 +659,19 @@ public class ElasticRepository {
                 )._toQuery();
         }
 
-        private Query rangeQuery(TimeBounds bounds) {
-                Query preferredTimeRange = RangeQuery.of(r -> r
-                                .field(METRICS_TIMESTAMP_FIELD)
-                                .gte(JsonData.of(bounds.fromIso()))
-                                .lte(JsonData.of(bounds.toIso()))
-                )._toQuery();
-
-                Query fallbackTimeRange = RangeQuery.of(r -> r
-                                .field(TIMESTAMP_FIELD)
-                                .gte(JsonData.of(bounds.fromIso()))
-                                .lte(JsonData.of(bounds.toIso()))
-                )._toQuery();
-
-                return BoolQuery.of(b -> b
-                                .should(preferredTimeRange)
-                                .should(fallbackTimeRange)
-                                .minimumShouldMatch("1")
-                )._toQuery();
-        }
-
+    private Query rangeQuery(TimeBounds bounds) {
+        return BoolQuery.of(b -> b
+                .should(RangeQuery.of(r -> r
+                        .field("timestamp")
+                        .gte(JsonData.of(bounds.fromIso()))
+                        .lte(JsonData.of(bounds.toIso())))._toQuery())
+                .should(RangeQuery.of(r -> r
+                        .field("@timestamp")
+                        .gte(JsonData.of(bounds.fromIso()))
+                        .lte(JsonData.of(bounds.toIso())))._toQuery())
+                .minimumShouldMatch("1")
+        )._toQuery();
+    }
         private TimeBounds resolveTimeBounds(String requestedFrom, String requestedTo) {
                 Instant now = Instant.now();
                 Instant retentionStart = now.minus(RETENTION_PERIOD);
