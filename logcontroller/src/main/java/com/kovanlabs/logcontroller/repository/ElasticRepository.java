@@ -3,13 +3,16 @@ package com.kovanlabs.logcontroller.repository;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -33,6 +36,8 @@ import co.elastic.clients.elasticsearch._types.query_dsl.RangeQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.TermQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.WildcardQuery;
 import co.elastic.clients.elasticsearch.core.IndexRequest;
+import co.elastic.clients.elasticsearch.core.CountRequest;
+import co.elastic.clients.elasticsearch.core.CountResponse;
 import co.elastic.clients.elasticsearch.core.SearchRequest;
 import co.elastic.clients.elasticsearch.core.SearchResponse;
 import co.elastic.clients.elasticsearch.core.search.Hit;
@@ -78,6 +83,7 @@ public class ElasticRepository {
 
         private volatile long writesMutedUntilMs = 0L;
         private volatile long nextErrorLogAtMs = 0L;
+        private volatile Map<String, Object> lastStableMetrics = defaultMetricsPayload();
 
         private final ElasticsearchClient client;
 
@@ -225,13 +231,31 @@ public class ElasticRepository {
                                                 SearchRequest request = buildMetricsRequest(service, bounds, interval, accessContext);
 
             SearchResponse<Void> response = client.search(request, Void.class);
-                        return toMetricsPayload(response, interval, intervalSeconds);
+                                                Map<String, Object> payload = toMetricsPayload(response, interval, intervalSeconds);
+                                                lastStableMetrics = payload;
+                                                return payload;
 
         } catch (Exception e) {
                         logErrorThrottled("metrics", e);
-            return new HashMap<>();
+                        return lastStableMetrics == null || lastStableMetrics.isEmpty() ? defaultMetricsPayload() : lastStableMetrics;
         }
     }
+
+                private Map<String, Object> defaultMetricsPayload() {
+                                return Stream.of(
+                                                                Map.entry("totalLogs", 0L),
+                                                                Map.entry("errorCount", 0L),
+                                                                Map.entry("errorRate", 0.0),
+                                                                Map.entry("avgResponseTime", 0.0),
+                                                                Map.entry("p95Latency", 0.0),
+                                                                Map.entry("bucketInterval", DEFAULT_METRICS_INTERVAL),
+                                                                Map.entry("throughputOverTime", List.<Map<String, Object>>of()),
+                                                                Map.entry("levelDistribution", List.<Map<String, Object>>of())
+                                ).collect(Collectors.toMap(
+                                                                Map.Entry::getKey,
+                                                                Map.Entry::getValue
+                                ));
+                }
 
         private SearchRequest buildMetricsRequest(String service, TimeBounds bounds, String interval, AuthenticatedUserContext accessContext) {
         BoolQuery boolQuery = BoolQuery.of(b -> b.filter(buildMetricFilters(service, bounds, accessContext)));
@@ -473,17 +497,19 @@ public class ElasticRepository {
 
         public long countErrorsInWindow(String windowExpression) {
                 try {
+                        if (!hasAnyLogIndexes()) {
+                                return 0L;
+                        }
+
                         BoolQuery boolQuery = BoolQuery.of(b -> b
                                         .filter(buildErrorWindowFilters(windowExpression)));
 
-                        SearchRequest request = SearchRequest.of(s -> s
+                        CountRequest request = CountRequest.of(c -> c
                                         .index(INDEX_PATTERN)
-                                        .query(boolQuery._toQuery())
-                                        .size(0));
+                                        .query(boolQuery._toQuery()));
 
-                        SearchResponse<Void> response = client.search(request, Void.class);
-                        var total = response.hits().total();
-                        return total != null ? total.value() : 0L;
+                        CountResponse response = client.count(request);
+                        return response.count();
                 } catch (Exception e) {
                         logErrorThrottled("countErrorsInWindow", e);
                         return 0L;
@@ -492,6 +518,10 @@ public class ElasticRepository {
 
         public Map<String, Long> countErrorsByServiceInWindow(String windowExpression, int maxServices) {
                 try {
+                        if (!hasAnyLogIndexes()) {
+                                return new HashMap<>();
+                        }
+
                         BoolQuery boolQuery = BoolQuery.of(b -> b
                                         .filter(buildErrorWindowFilters(windowExpression)));
 
@@ -708,8 +738,65 @@ public class ElasticRepository {
                 }
         }
 
+        private boolean hasAnyLogIndexes() {
+                try {
+                        return client.indices().exists(e -> e.index(INDEX_PATTERN)).value();
+                } catch (Exception e) {
+                        logErrorThrottled("checkIndexes", e);
+                        return false;
+                }
+        }
+
         private boolean hasText(String value) {
                 return value != null && !value.isBlank();
+        }
+
+        private List<String> resolveWindowIndexes(String windowExpression) {
+                Duration window = parseWindowExpression(windowExpression);
+                if (window == null) {
+                        return List.of(INDEX_PATTERN);
+                }
+
+                Instant now = Instant.now();
+                Instant from = now.minus(window);
+                ZoneId zone = ZoneId.systemDefault();
+
+                Set<String> indexes = new LinkedHashSet<>();
+                LocalDate current = from.atZone(zone).toLocalDate();
+                LocalDate end = now.atZone(zone).toLocalDate();
+
+                while (!current.isAfter(end)) {
+                        indexes.add("app-logs-" + current);
+                        current = current.plusDays(1);
+                }
+
+                return new ArrayList<>(indexes);
+        }
+
+        private Duration parseWindowExpression(String windowExpression) {
+                if (!hasText(windowExpression)) {
+                        return null;
+                }
+
+                try {
+                        String trimmed = windowExpression.trim().toLowerCase();
+                        if (trimmed.length() < 2) {
+                                return null;
+                        }
+
+                        long amount = Long.parseLong(trimmed.substring(0, trimmed.length() - 1));
+                        char unit = trimmed.charAt(trimmed.length() - 1);
+
+                        return switch (unit) {
+                                case 's' -> Duration.ofSeconds(amount);
+                                case 'm' -> Duration.ofMinutes(amount);
+                                case 'h' -> Duration.ofHours(amount);
+                                case 'd' -> Duration.ofDays(amount);
+                                default -> null;
+                        };
+                } catch (Exception ignored) {
+                        return null;
+                }
         }
 
         private record TimeBounds(String fromIso, String toIso) {}

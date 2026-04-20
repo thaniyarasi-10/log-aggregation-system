@@ -15,6 +15,10 @@ public interface AppUserRepository extends JpaRepository<AppUser, String> {
 
     List<AppUser> findByIsActiveTrueOrderByUsernameAsc();
 
+    boolean existsByEmailIgnoreCase(String email);
+
+    boolean existsByUsernameIgnoreCase(String username);
+
     boolean existsByEmailIgnoreCaseAndIdNot(String email, String id);
 
     boolean existsByUsernameIgnoreCaseAndIdNot(String username, String id);

@@ -30,7 +30,7 @@ import static org.springframework.http.HttpStatus.FORBIDDEN;
 
 @RestController
 @CrossOrigin(origins = "http://localhost:3000", allowedHeaders = "*", methods = {RequestMethod.GET, RequestMethod.POST, RequestMethod.OPTIONS})
-@RequestMapping("/logs")
+@RequestMapping({"/logs", "/api/logs"})
 public class LogController {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(LogController.class);
@@ -101,10 +101,24 @@ public class LogController {
     ) {
         AuthenticatedUserContext context = accessAuthorizationService.getCurrentUserAccessContext();
         requirePermission(context, PermissionName.LOGS_READ);
-        List<LogEvent> logs =
-                elasticRepository.search(service, environment, level, traceId, message, from, to, page, size, context);
-
-        return ResponseEntity.ok(logs);
+        try {
+            List<LogEvent> logs = elasticRepository.search(
+                    service,
+                    environment,
+                    level,
+                    traceId,
+                    message,
+                    from,
+                    to,
+                    page,
+                    size,
+                    context
+            );
+            return ResponseEntity.ok(logs == null ? List.of() : logs);
+        } catch (RuntimeException ex) {
+            LOGGER.warn("Failed to fetch logs, returning empty result: {}", ex.getMessage());
+            return ResponseEntity.ok(List.of());
+        }
     }
 
     @GetMapping("/services")
@@ -115,7 +129,13 @@ public class LogController {
     ) {
         AuthenticatedUserContext context = accessAuthorizationService.getCurrentUserAccessContext();
         requirePermission(context, PermissionName.LOGS_READ);
-        return ResponseEntity.ok(elasticRepository.getDistinctServices(from, to, size, context));
+        try {
+            List<String> services = elasticRepository.getDistinctServices(from, to, size, context);
+            return ResponseEntity.ok(services == null ? List.of() : services);
+        } catch (RuntimeException ex) {
+            LOGGER.warn("Failed to fetch service list, returning empty result: {}", ex.getMessage());
+            return ResponseEntity.ok(List.of());
+        }
     }
 
     @GetMapping("/metrics")
@@ -127,7 +147,26 @@ public class LogController {
     ) {
         AuthenticatedUserContext context = accessAuthorizationService.getCurrentUserAccessContext();
         requirePermission(context, PermissionName.METRICS_READ);
-        return ResponseEntity.ok(elasticRepository.getMetrics(service, from, to, timePreset, context));
+        try {
+            Map<String, Object> metrics = elasticRepository.getMetrics(service, from, to, timePreset, context);
+            return ResponseEntity.ok(metrics == null ? defaultMetricsResponse() : metrics);
+        } catch (RuntimeException ex) {
+            LOGGER.warn("Failed to fetch metrics, returning fallback payload: {}", ex.getMessage());
+            return ResponseEntity.ok(defaultMetricsResponse());
+        }
+    }
+
+    private Map<String, Object> defaultMetricsResponse() {
+        return Map.of(
+                "totalLogs", 0,
+                "errorCount", 0,
+                "errorRate", 0.0,
+                "avgResponseTime", 0.0,
+                "p95Latency", 0.0,
+                "bucketInterval", "1m",
+                "throughputOverTime", List.of(),
+                "levelDistribution", List.of()
+        );
     }
 
     private void requirePermission(AuthenticatedUserContext context, String permission) {

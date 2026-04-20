@@ -38,7 +38,19 @@ public class LogParser {
             // SAFE conversion
             LogEvent event = new LogEvent();
 
-            event.setService(firstString(log, "service", "serviceName", "app", "application", "logger"));
+                event.setService(firstString(
+                    log,
+                    "service",
+                    "serviceName",
+                    "service_name",
+                    "project",
+                    "projectName",
+                    "app",
+                    "app_name",
+                    "application",
+                    "logger",
+                    "loggerName"
+                ));
             event.setLevel(firstString(log, "level", "severity", "logLevel"));
             event.setMessage(firstString(log, "message", "msg", "log", "event"));
             event.setTimestamp(firstString(log, "timestamp", "@timestamp", "time", "datetime"));

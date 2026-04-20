@@ -2,6 +2,7 @@ package com.kovanlabs.logcontroller.config;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.List;
 
 import org.slf4j.Logger;
@@ -12,6 +13,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.oauth2.core.oidc.user.OidcUser;
 import org.springframework.security.oauth2.core.user.OAuth2User;
 import org.springframework.security.web.SecurityFilterChain;
@@ -25,16 +27,19 @@ public class SecurityConfig {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(SecurityConfig.class);
     private final String frontendRedirectUrl;
+    private final String corsAllowedOrigins;
     private final String oauthClientId;
     private final String oauthClientSecret;
     private final String oauthTokenUri;
 
     public SecurityConfig(
             @Value("${app.oauth.frontend-url:http://localhost:3000}") String frontendRedirectUrl,
+            @Value("${app.cors.allowed-origins:http://localhost:3000,http://localhost:8080}") String corsAllowedOrigins,
             @Value("${spring.security.oauth2.client.registration.azure.client-id:}") String oauthClientId,
             @Value("${spring.security.oauth2.client.registration.azure.client-secret:}") String oauthClientSecret,
             @Value("${spring.security.oauth2.client.provider.azure.token-uri:}") String oauthTokenUri) {
         this.frontendRedirectUrl = frontendRedirectUrl;
+        this.corsAllowedOrigins = corsAllowedOrigins;
         this.oauthClientId = oauthClientId;
         this.oauthClientSecret = oauthClientSecret;
         this.oauthTokenUri = oauthTokenUri;
@@ -62,6 +67,7 @@ public class SecurityConfig {
         http
                 .cors(Customizer.withDefaults())
                 .csrf(csrf -> csrf.disable())
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/error", "/oauth2/**", "/login/**", "/api/auth/login", "/oauth2-login-error").permitAll()
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
@@ -71,6 +77,10 @@ public class SecurityConfig {
                         .successHandler(authenticationSuccessHandler())
                         .failureHandler((request, response, exception) -> {
                             LOGGER.error("OAuth2 authentication failed: {}", exception.getMessage(), exception);
+                            if (exception instanceof org.springframework.security.oauth2.core.OAuth2AuthenticationException oauth2Ex
+                                    && "authorization_request_not_found".equals(oauth2Ex.getError().getErrorCode())) {
+                                LOGGER.error("OAuth2 authorization request not found. This usually means JSESSIONID/state was lost between /oauth2/authorization/azure and /login/oauth2/code/azure. Ensure login starts on backend origin, not frontend proxy origin.");
+                            }
                             if (exception.getCause() != null) {
                                 LOGGER.error("Root cause: {}", exception.getCause().getMessage(), exception.getCause());
                             }
@@ -122,7 +132,11 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(List.of("http://localhost:3000", "http://localhost:8080"));
+        List<String> configuredOrigins = Arrays.stream(corsAllowedOrigins.split(","))
+            .map(String::trim)
+            .filter(origin -> !origin.isBlank())
+            .toList();
+        configuration.setAllowedOrigins(configuredOrigins);
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("*"));
         configuration.setAllowCredentials(true);

@@ -15,4 +15,6 @@ public interface AppServiceRepository extends JpaRepository<AppService, UUID> {
 	List<AppService> findByIsActiveTrueOrderByNameAsc();
 
 	Optional<AppService> findByNameIgnoreCase(String name);
+
+	boolean existsByNameIgnoreCaseAndIsActiveTrue(String name);
 }

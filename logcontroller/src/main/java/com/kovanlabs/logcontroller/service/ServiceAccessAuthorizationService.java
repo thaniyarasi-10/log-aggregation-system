@@ -275,16 +275,6 @@ public class ServiceAccessAuthorizationService {
             allowedServices = extractAllowedServicesFromAuthentication();
         }
 
-        if (allowedServices.isEmpty() && !admin && hasReadPermission(permissionNames)) {
-            allowedServices = appServiceRepository.findByIsActiveTrue().stream()
-                    .map(AppService::getName)
-                    .filter(Objects::nonNull)
-                    .map(String::trim)
-                    .filter(name -> !name.isBlank())
-                    .distinct()
-                    .toList();
-        }
-
         LOGGER.debug(
                 "getUserAccessContext email='{}' userId='{}' roleNames='{}' allowedServicesCount={} permissionsCount={}",
                 user.getEmail(),
@@ -529,17 +519,6 @@ public class ServiceAccessAuthorizationService {
                 .filter(Objects::nonNull)
                 .map(value -> value.trim().toLowerCase(Locale.ROOT))
                 .anyMatch(value -> PERMISSION_SERVICES_MANAGE.equals(value) || PERMISSION_USERS_MANAGE.equals(value));
-    }
-
-    private boolean hasReadPermission(List<String> permissionNames) {
-        if (permissionNames == null || permissionNames.isEmpty()) {
-            return false;
-        }
-
-        return permissionNames.stream()
-                .filter(Objects::nonNull)
-                .map(value -> value.trim().toLowerCase(Locale.ROOT))
-                .anyMatch(value -> "logs:read".equals(value) || "metrics:read".equals(value));
     }
 
     private boolean containsAdminValue(Iterable<?> values) {

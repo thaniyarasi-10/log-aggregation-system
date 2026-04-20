@@ -26,7 +26,7 @@ public class ElasticProperties {
 
     private int connectTimeoutMs = 2000;
     private int connectionRequestTimeoutMs = 2000;
-    private int socketTimeoutMs = 5000;
+    private int socketTimeoutMs = 15000;
 
     public String getHost() {
         return host;

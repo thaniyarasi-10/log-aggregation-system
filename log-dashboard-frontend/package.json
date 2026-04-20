@@ -2,11 +2,27 @@
   "name": "log-dashboard-frontend",
   "version": "1.0.0",
   "description": "Production-grade frontend dashboard for log aggregation",
+  "private": true,
+  "type": "module",
   "scripts": {
-    "build": "tsc",
-    "watch": "tsc -w"
+    "dev": "vite --host 0.0.0.0 --port 3000",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 3000",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "axios": "^1.9.0",
+    "chart.js": "^4.4.8",
+    "react": "^18.3.1",
+    "react-chartjs-2": "^5.3.0",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.30.1"
   },
   "devDependencies": {
-    "typescript": "^5.4.3"
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.4.1",
+    "typescript": "^5.8.3",
+    "vite": "^5.4.19"
   }
 }

@@ -23,14 +23,24 @@ import com.kovanlabs.logcontroller.service.ServiceAccessAuthorizationService;
 public class OAuthController {
 
     private final ServiceAccessAuthorizationService authorizationService;
+    private final String backendBaseUrl;
+    private final String oauthRedirectUri;
 
-    public OAuthController(ServiceAccessAuthorizationService authorizationService) {
+    public OAuthController(
+            ServiceAccessAuthorizationService authorizationService,
+            @org.springframework.beans.factory.annotation.Value("${app.oauth.backend-url:http://localhost:8080}") String backendBaseUrl,
+            @org.springframework.beans.factory.annotation.Value("${spring.security.oauth2.client.registration.azure.redirect-uri:http://localhost:8080/login/oauth2/code/azure}") String oauthRedirectUri) {
         this.authorizationService = authorizationService;
+        this.backendBaseUrl = backendBaseUrl;
+        this.oauthRedirectUri = oauthRedirectUri;
     }
 
     @GetMapping("/api/auth/login")
     public void login(HttpServletResponse response) throws java.io.IOException {
-        response.sendRedirect("/oauth2/authorization/azure");
+        String normalizedBaseUrl = backendBaseUrl != null && !backendBaseUrl.isBlank()
+                ? backendBaseUrl.replaceAll("/$", "")
+                : "http://localhost:8080";
+        response.sendRedirect(normalizedBaseUrl + "/oauth2/authorization/azure");
     }
 
     @GetMapping("/api/auth/me")
@@ -98,8 +108,8 @@ public class OAuthController {
         Map<String, Object> errorResponse = new HashMap<>();
         String errorParam = request.getParameter("error");
         errorResponse.put("error", errorParam != null ? errorParam : "Unknown OAuth2 error");
-        errorResponse.put("message", "Azure OAuth2 authentication failed. Check credentials and redirect URI configuration in Azure portal.");
-        errorResponse.put("redirectUri", "http://localhost:8080/login/oauth2/code/azure");
+        errorResponse.put("message", "Azure OAuth2 authentication failed. If error is authorization_request_not_found, start login from backend origin so OAuth2 state session is preserved.");
+        errorResponse.put("redirectUri", oauthRedirectUri);
         return ResponseEntity.status(401).body(errorResponse);
     }
 
@@ -112,7 +122,7 @@ public class OAuthController {
         diagnostics.put("clientSecret", "***REDACTED***");
         diagnostics.put("clientSecretConfigured", configuredSecret != null && !configuredSecret.isBlank());
         diagnostics.put("issuerUri", env.getProperty("spring.security.oauth2.client.provider.azure.issuer-uri"));
-        diagnostics.put("redirectUri", "http://localhost:8080/login/oauth2/code/azure");
+        diagnostics.put("redirectUri", oauthRedirectUri);
         diagnostics.put("scopes", env.getProperty("spring.security.oauth2.client.registration.azure.scope"));
         diagnostics.put("clientAuthMethod", env.getProperty("spring.security.oauth2.client.registration.azure.client-authentication-method"));
         diagnostics.put("authGrantType", env.getProperty("spring.security.oauth2.client.registration.azure.authorization-grant-type"));

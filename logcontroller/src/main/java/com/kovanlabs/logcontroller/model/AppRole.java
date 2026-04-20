@@ -15,6 +15,7 @@ public class AppRole {
 
     @Id
     @GeneratedValue
+    @Column(name = "id", nullable = false)
     private UUID id;
 
     @Column(name = "name", nullable = false, unique = true, length = 50)

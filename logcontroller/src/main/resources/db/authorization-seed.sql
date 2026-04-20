@@ -3,7 +3,7 @@
 INSERT INTO "role" (name, description)
 VALUES
     ('ADMIN', 'Full platform access and management'),
-    ('DEVELOPER', 'Read logs and metrics for assigned services'),
+    ('DEV', 'Read logs and metrics for assigned services'),
     ('VIEWER', 'Read-only logs and metrics for assigned services')
 ON CONFLICT (name) DO NOTHING;
 
@@ -37,7 +37,7 @@ SELECT 'u-admin-root', r.id FROM "role" r WHERE r.name = 'ADMIN'
 ON CONFLICT (user_id, role_id) DO NOTHING;
 
 INSERT INTO user_role (user_id, role_id)
-SELECT 'u-dev-ari', r.id FROM "role" r WHERE r.name = 'DEVELOPER'
+SELECT 'u-dev-ari', r.id FROM "role" r WHERE r.name = 'DEV'
 ON CONFLICT (user_id, role_id) DO NOTHING;
 
 INSERT INTO user_role (user_id, role_id)
@@ -55,7 +55,7 @@ INSERT INTO role_permission (role_id, permission_id)
 SELECT r.id, p.id
 FROM "role" r
 JOIN "permission" p ON p.name IN ('logs:read', 'metrics:read', 'alerts:read', 'services:read')
-WHERE r.name = 'DEVELOPER'
+WHERE r.name = 'DEV'
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 INSERT INTO role_permission (role_id, permission_id)
@@ -76,3 +76,8 @@ SELECT 'u-viewer-mina', s.id
 FROM "service" s
 WHERE s.name IN ('inventory-service')
 ON CONFLICT (user_id, service_id) DO NOTHING;
+
+INSERT INTO service_request (requested_by, service_name, description, status)
+VALUES
+    ('u-dev-ari', 'billing-service', 'Need access for payment reconciliation dashboards', 'PENDING')
+ON CONFLICT DO NOTHING;

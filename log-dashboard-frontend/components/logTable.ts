@@ -1,3 +1,5 @@
+
+
 import { LogEvent } from '../ts/types.js';
 import { formatDate, escapeHtml, getLevelClass } from '../ts/utils.js';
 
