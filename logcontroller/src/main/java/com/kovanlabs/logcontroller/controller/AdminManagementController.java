@@ -241,7 +241,7 @@ public class AdminManagementController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Service name is required");
         }
 
-        String normalizedName = request.name().trim();
+        String normalizedName = request.name().toLowerCase(Locale.ROOT).trim();
         String description = request.description() == null ? "" : request.description().trim();
 
         AppService existing = appServiceRepository.findByNameIgnoreCase(normalizedName).orElse(null);
@@ -293,7 +293,7 @@ public class AdminManagementController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Service name is required");
         }
 
-        String normalizedName = request.name().trim();
+        String normalizedName = request.name().toLowerCase(Locale.ROOT).trim();
         String description = request.description() == null ? "" : request.description().trim();
 
         AppService existing = appServiceRepository.findByNameIgnoreCase(normalizedName).orElse(null);
@@ -364,7 +364,7 @@ public class AdminManagementController {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Request already processed");
         }
 
-        String normalizedServiceName = serviceRequest.getServiceName().trim();
+        String normalizedServiceName = serviceRequest.getServiceName().toLowerCase(Locale.ROOT).trim();
         String description = request != null && request.description() != null
                 ? request.description().trim()
                 : (serviceRequest.getDescription() == null ? "" : serviceRequest.getDescription().trim());

@@ -43,6 +43,36 @@ function isForbidden(error: unknown): boolean {
   return axios.isAxiosError(error) && error.response?.status === 403;
 }
 
+function sanitizeRequestConfig(config?: AxiosRequestConfig): AxiosRequestConfig | undefined {
+  if (!config || !config.params || typeof config.params !== 'object') {
+    return config;
+  }
+
+  const sanitizedParams = Object.entries(config.params as Record<string, unknown>).reduce<Record<string, unknown>>(
+    (acc, [key, value]) => {
+      if (value === undefined || value === null) {
+        return acc;
+      }
+
+      if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!trimmed || trimmed.toLowerCase() === 'undefined' || trimmed.toLowerCase() === 'null') {
+          return acc;
+        }
+      }
+
+      acc[key] = value;
+      return acc;
+    },
+    {}
+  );
+
+  return {
+    ...config,
+    params: sanitizedParams
+  };
+}
+
 export function extractApiErrorMessage(error: unknown, fallback = 'Something went wrong'): string {
   if (!axios.isAxiosError(error)) {
     return fallback;
@@ -62,25 +92,27 @@ async function getWithFallback<T>(
   fallback: string,
   config?: AxiosRequestConfig
 ): Promise<T> {
+  const safeConfig = sanitizeRequestConfig(config);
   try {
-    const response = await api.get<T>(primary, config);
+    const response = await api.get<T>(primary, safeConfig);
     return response.data;
   } catch (error) {
     if (!isNotFound(error)) {
       throw error;
     }
 
-    const response = await api.get<T>(fallback, config);
+    const response = await api.get<T>(fallback, safeConfig);
     return response.data;
   }
 }
 
 async function getByPaths<T>(paths: string[], config?: AxiosRequestConfig): Promise<T> {
+  const safeConfig = sanitizeRequestConfig(config);
   let lastError: unknown;
 
   for (const path of paths) {
     try {
-      const response = await directApi.get<T>(path, config);
+      const response = await directApi.get<T>(path, safeConfig);
       return response.data;
     } catch (error) {
       lastError = error;
@@ -94,11 +126,12 @@ async function getByPaths<T>(paths: string[], config?: AxiosRequestConfig): Prom
 }
 
 async function getByPathsAllowForbidden<T>(paths: string[], config?: AxiosRequestConfig): Promise<T> {
+  const safeConfig = sanitizeRequestConfig(config);
   let lastError: unknown;
 
   for (const path of paths) {
     try {
-      const response = await directApi.get<T>(path, config);
+      const response = await directApi.get<T>(path, safeConfig);
       return response.data;
     } catch (error) {
       lastError = error;
@@ -250,27 +283,18 @@ export const apiService = {
   },
 
   async getServices(): Promise<ServiceRecord[]> {
-    try {
-      const data = await getByPathsAllowForbidden<ServiceRecord[] | string[]>([
-        '/api/admin/services',
-        '/api/services/details',
-        '/api/services'
-      ]);
-      if (Array.isArray(data) && typeof data[0] === 'string') {
-        return (data as string[]).map((name) => ({ name }));
-      }
-      return Array.isArray(data) ? (data as ServiceRecord[]) : [];
-    } catch (error) {
-      if (!isNotFound(error)) {
-        throw error;
-      }
-
-      const fallback = await getByPaths<string[]>(['/api/logs/services']);
-      if (!Array.isArray(fallback)) {
-        return [];
-      }
-      return fallback.map((name) => ({ name }));
+    const data = await getByPaths<string[]>(['/api/services']);
+    if (!Array.isArray(data)) {
+      return [];
     }
+    return data
+      .filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
+      .map((name) => ({ name: name.trim().toLowerCase() }));
+  },
+
+  async getAdminServices(): Promise<ServiceRecord[]> {
+    const data = await getByPaths<ServiceRecord[]>(['/api/admin/services', '/admin/services']);
+    return Array.isArray(data) ? data : [];
   },
 
   async fetchServices(): Promise<ServiceRecord[]> {
@@ -301,14 +325,22 @@ export const apiService = {
     payload?: { comment?: string; description?: string }
   ): Promise<ServiceAccessRequest> {
     return postByPaths<ServiceAccessRequest, typeof payload>(
-      [`/api/admin/services/requests/${requestId}/approve`, `/admin/services/requests/${requestId}/approve`],
+      [
+        `/api/services/${requestId}/approve`,
+        `/api/admin/services/requests/${requestId}/approve`,
+        `/admin/services/requests/${requestId}/approve`
+      ],
       payload || {}
     );
   },
 
   async rejectService(requestId: string, payload?: { comment?: string }): Promise<ServiceAccessRequest> {
     return postByPaths<ServiceAccessRequest, typeof payload>(
-      [`/api/admin/services/requests/${requestId}/reject`, `/admin/services/requests/${requestId}/reject`],
+      [
+        `/api/services/${requestId}/reject`,
+        `/api/admin/services/requests/${requestId}/reject`,
+        `/admin/services/requests/${requestId}/reject`
+      ],
       payload || {}
     );
   },
@@ -320,7 +352,12 @@ export const apiService = {
         '/services/requests',
         '/api/admin/services/requests',
         '/admin/services/requests'
-      ]);
+      ], {
+        headers: {
+          'Cache-Control': 'no-cache',
+          Pragma: 'no-cache'
+        }
+      });
       return Array.isArray(data) ? data : [];
     } catch (error) {
       if (isForbidden(error) || isNotFound(error)) {

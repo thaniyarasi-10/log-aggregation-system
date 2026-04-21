@@ -601,12 +601,17 @@ public class ElasticRepository {
                         return Optional.empty();
                 }
 
-                if (!accessContext.isAdmin() && !accessContext.isServiceAllowed(service)) {
+                String normalizedService = service.trim().toLowerCase();
+
+                if (!accessContext.isAdmin() && !accessContext.isServiceAllowed(normalizedService)) {
                         LOGGER.warn("DEV user {} requested unauthorized service '{}'", accessContext.email(), service);
                         return Optional.of(noAccessQuery());
                 }
 
-                return Optional.of(wildcardKeywordQuery(SERVICE_KEYWORD, service));
+                return Optional.of(TermQuery.of(t -> t
+                                .field(SERVICE_KEYWORD)
+                                .value(normalizedService)
+                )._toQuery());
         }
 
         private Query buildMessageQuery(String message) {

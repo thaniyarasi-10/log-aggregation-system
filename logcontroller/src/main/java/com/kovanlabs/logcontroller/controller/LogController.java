@@ -1,14 +1,15 @@
 package com.kovanlabs.logcontroller.controller;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import static org.springframework.http.HttpStatus.FORBIDDEN;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -17,16 +18,18 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kovanlabs.logcontroller.auth.AuthenticatedUserContext;
 import com.kovanlabs.logcontroller.auth.PermissionName;
+import com.kovanlabs.logcontroller.model.AppService;
 import com.kovanlabs.logcontroller.model.LogEvent;
+import com.kovanlabs.logcontroller.repository.AppServiceRepository;
 import com.kovanlabs.logcontroller.repository.ElasticRepository;
 import com.kovanlabs.logcontroller.service.LogProcessingService;
 import com.kovanlabs.logcontroller.service.ServiceAccessAuthorizationService;
-
-import static org.springframework.http.HttpStatus.FORBIDDEN;
 
 @RestController
 @CrossOrigin(origins = "http://localhost:3000", allowedHeaders = "*", methods = {RequestMethod.GET, RequestMethod.POST, RequestMethod.OPTIONS})
@@ -40,6 +43,9 @@ public class LogController {
 
     @Autowired
     private ElasticRepository elasticRepository;
+
+    @Autowired
+    private AppServiceRepository appServiceRepository;
 
     @Autowired
     private ServiceAccessAuthorizationService accessAuthorizationService;
@@ -122,15 +128,34 @@ public class LogController {
     }
 
     @GetMapping("/services")
-    public ResponseEntity<List<String>> services(
-            @RequestParam(value = "from", required = false) String from,
-            @RequestParam(value = "to", required = false) String to,
-            @RequestParam(value = "size", defaultValue = "200") int size
-    ) {
+    public ResponseEntity<List<String>> services() {
         AuthenticatedUserContext context = accessAuthorizationService.getCurrentUserAccessContext();
         requirePermission(context, PermissionName.LOGS_READ);
         try {
-            List<String> services = elasticRepository.getDistinctServices(from, to, size, context);
+            List<AppService> activeServices = appServiceRepository.findByIsActiveTrue();
+            List<String> services;
+
+            if (context.isAdmin()) {
+                services = activeServices.stream()
+                        .map(AppService::getName)
+                        .filter(name -> name != null && !name.isBlank())
+                        .distinct()
+                        .toList();
+            } else {
+                Set<String> allowed = context.allowedServices().stream()
+                        .filter(value -> value != null && !value.isBlank())
+                        .map(value -> value.trim().toLowerCase(Locale.ROOT))
+                        .collect(java.util.stream.Collectors.toSet());
+
+                boolean allowAll = allowed.contains("*");
+                services = activeServices.stream()
+                        .map(AppService::getName)
+                        .filter(name -> name != null && !name.isBlank())
+                        .filter(name -> allowAll || allowed.contains(name.trim().toLowerCase(Locale.ROOT)))
+                        .distinct()
+                        .toList();
+            }
+
             return ResponseEntity.ok(services == null ? List.of() : services);
         } catch (RuntimeException ex) {
             LOGGER.warn("Failed to fetch service list, returning empty result: {}", ex.getMessage());

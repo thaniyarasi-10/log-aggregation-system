@@ -320,6 +320,13 @@ body {
 .table-scroll-area {
     flex: 1;
     overflow-y: auto;
+    overflow-x: auto;
+}
+
+.state-message {
+    display: flex;
+    align-items: center;
+    padding: 1rem;
 }
 
 .log-table {
@@ -420,10 +427,45 @@ body {
 .table-actions {
     display: flex;
     gap: 0.5rem;
+    flex-wrap: wrap;
 }
 
 .clickable-row td {
     vertical-align: middle;
+}
+
+.services-table {
+    table-layout: fixed;
+}
+
+.services-table th,
+.services-table td {
+    white-space: nowrap;
+}
+
+.services-cell-name {
+    width: 24%;
+    font-weight: 600;
+}
+
+.services-cell-description {
+    width: 40%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.services-cell-status {
+    width: 16%;
+    font-weight: 600;
+}
+
+.services-cell-actions {
+    width: 20%;
+}
+
+.muted-cell {
+    color: var(--text-secondary);
 }
 
 .modal-backdrop {

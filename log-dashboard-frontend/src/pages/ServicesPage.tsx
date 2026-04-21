@@ -21,6 +21,8 @@ export default function ServicesPage() {
   const [requests, setRequests] = useState<ServiceAccessRequest[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [loadError, setLoadError] = useState<string>('');
+  const [requestsLoading, setRequestsLoading] = useState<boolean>(true);
+  const [requestsError, setRequestsError] = useState<string>('');
   const [actionError, setActionError] = useState<string>('');
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [showCreateInline, setShowCreateInline] = useState<boolean>(false);
@@ -28,8 +30,24 @@ export default function ServicesPage() {
   const [editService, setEditService] = useState<ServiceRecord | null>(null);
   const [editForm, setEditForm] = useState<ServiceForm>(emptyServiceForm);
 
+  const toCleanLoadError = (err: unknown) => {
+    const message = extractApiErrorMessage(err, 'Failed to load services').trim();
+    if (!message || message.toLowerCase() === 'invalid request data') {
+      return 'Failed to load services';
+    }
+    return message;
+  };
+
+  const toCleanRequestsError = (err: unknown) => {
+    const message = extractApiErrorMessage(err, 'Failed to load requests').trim();
+    if (!message || message.toLowerCase() === 'invalid request data') {
+      return 'Failed to load requests';
+    }
+    return message;
+  };
+
   const loadServices = async () => {
-    const data = await apiService.getServices();
+    const data = isAdmin ? await apiService.getAdminServices() : await apiService.getServices();
     setServices(data);
   };
 
@@ -37,7 +55,9 @@ export default function ServicesPage() {
     try {
       const data = await apiService.getServiceRequests();
       setRequests(data);
-    } catch {
+      setRequestsError('');
+    } catch (err) {
+      setRequestsError(toCleanRequestsError(err));
       setRequests([]);
     }
   };
@@ -51,20 +71,29 @@ export default function ServicesPage() {
           setLoading(true);
         }
 
-        const data = await apiService.getServices();
+        const data = isAdmin ? await apiService.getAdminServices() : await apiService.getServices();
         if (!active) return;
         setServices(data);
-        const pendingRequests = await apiService.getServiceRequests();
-        if (active) {
-          setRequests(pendingRequests);
-        }
         setLoadError('');
       } catch (err) {
         if (!active) return;
-        const message = extractApiErrorMessage(err, 'Failed to load services');
-        setLoadError(message);
+        setLoadError(toCleanLoadError(err));
+      }
+
+      try {
+        const pendingRequests = await apiService.getServiceRequests();
+        if (active) {
+          setRequests(pendingRequests);
+          setRequestsError('');
+        }
+      } catch (err) {
+        if (active) {
+          setRequestsError(toCleanRequestsError(err));
+          setRequests([]);
+        }
       } finally {
         if (showLoader && active) setLoading(false);
+        if (showLoader && active) setRequestsLoading(false);
       }
     };
 
@@ -77,9 +106,18 @@ export default function ServicesPage() {
       active = false;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [isAdmin]);
 
   const normalizedRequestStatus = (status?: string) => String(status || '').trim().toUpperCase();
+  const pendingRequests = requests.filter((request) => normalizedRequestStatus(request.status) === 'PENDING');
+  const rejectedRequests = requests.filter((request) => normalizedRequestStatus(request.status) === 'REJECTED');
+
+  const getStatusBadgeClass = (status?: string) => {
+    const normalized = normalizedRequestStatus(status);
+    if (normalized === 'APPROVED') return 'tag tag-info';
+    if (normalized === 'REJECTED') return 'tag tag-error';
+    return 'tag tag-warn';
+  };
 
   const createService = async () => {
     if (!createForm.name.trim()) {
@@ -201,7 +239,7 @@ export default function ServicesPage() {
       <section className="dashboard-main">
         <section className="glass-panel table-container">
           <div className="table-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h2>Services</h2>
+            <h2>Approved Services</h2>
             {isAdmin && (
               <button className="btn" disabled={submitting} onClick={openCreateInline}>
                 Add Service
@@ -242,28 +280,31 @@ export default function ServicesPage() {
             </div>
           )}
           {actionError && <div className="table-scroll-area" style={{ padding: '1rem' }}><p className="error">{actionError}</p></div>}
-          {loading && <div className="table-scroll-area" style={{ padding: '1rem' }}>Loading services...</div>}
-          {!loading && (
-            <>
-              {loadError && <div className="table-scroll-area" style={{ padding: '1rem' }}><p className="error">{loadError}</p></div>}
+          {loading && <div className="table-scroll-area state-message">Loading services...</div>}
+          {!loading && loadError && (
+            <div className="table-scroll-area state-message">
+              <p className="error">{loadError}</p>
+            </div>
+          )}
+          {!loading && !loadError && (
             <div className="table-scroll-area">
-              <table className="log-table">
+              <table className="log-table services-table">
             <thead>
               <tr>
                 <th>Name</th>
                 <th>Description</th>
-                {isAdmin && <th>Status</th>}
-                {isAdmin && <th>Actions</th>}
+                <th>Status</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
               {services.map((service) => (
                 <tr key={service.id || service.name} className="clickable-row">
-                  <td>{service.name}</td>
-                  <td>{service.description || '-'}</td>
-                  {isAdmin && <td>{service.status || (service.active === false ? 'INACTIVE' : 'ACTIVE')}</td>}
-                  {isAdmin && (
-                    <td>
+                  <td className="services-cell-name">{service.name}</td>
+                  <td className="services-cell-description">{service.description || '-'}</td>
+                  <td className="services-cell-status">{service.status || (service.active === false ? 'INACTIVE' : 'ACTIVE')}</td>
+                  <td className="services-cell-actions">
+                    {isAdmin ? (
                       <div className="table-actions">
                         <button className="btn" onClick={() => openEdit(service)} disabled={!service.id}>
                           Edit
@@ -276,45 +317,52 @@ export default function ServicesPage() {
                           Delete
                         </button>
                       </div>
-                    </td>
-                  )}
+                    ) : (
+                      <span className="muted-cell">-</span>
+                    )}
+                  </td>
                 </tr>
               ))}
               {!services.length && (
                 <tr>
-                  <td colSpan={isAdmin ? 4 : 2}>{isAdmin ? 'No services found.' : 'No services assigned.'}</td>
+                  <td colSpan={4}>No services available</td>
                 </tr>
               )}
             </tbody>
               </table>
             </div>
-            </>
           )}
         </section>
 
         <section className="glass-panel table-container">
-          <div className="table-header"><h2>{isAdmin ? 'Pending Requests' : 'My Requests'}</h2></div>
-          <div className="table-scroll-area">
-            <table className="log-table">
-              <thead>
-                <tr>
-                  <th>Service</th>
-                  <th>Requested By</th>
-                  <th>Status</th>
-                  <th>Comment</th>
-                  {isAdmin && <th>Actions</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {requests.map((request) => (
-                  <tr key={request.id}>
-                    <td>{request.serviceName}</td>
-                    <td>{request.requestedByEmail}</td>
-                    <td>{request.status}</td>
-                    <td>{request.reviewComment || '-'}</td>
-                    {isAdmin && (
-                      <td>
-                        {normalizedRequestStatus(request.status) === 'PENDING' ? (
+          <div className="table-header"><h2>{isAdmin ? 'Pending Requests' : 'My Pending Requests'}</h2></div>
+          {requestsLoading && <div className="table-scroll-area state-message">Loading requests...</div>}
+          {!requestsLoading && requestsError && (
+            <div className="table-scroll-area state-message">
+              <p className="error">{requestsError}</p>
+            </div>
+          )}
+          {!requestsLoading && !requestsError && (
+            <div className="table-scroll-area">
+              <table className="log-table">
+                <thead>
+                  <tr>
+                    <th>Service</th>
+                    <th>Requested By</th>
+                    <th>Status</th>
+                    <th>Description</th>
+                    {isAdmin && <th>Actions</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {pendingRequests.map((request) => (
+                    <tr key={request.id}>
+                      <td>{request.serviceName}</td>
+                      <td>{request.requestedByEmail}</td>
+                      <td><span className={getStatusBadgeClass(request.status)}>{normalizedRequestStatus(request.status)}</span></td>
+                      <td>{request.description || '-'}</td>
+                      {isAdmin && (
+                        <td>
                           <div className="table-actions">
                             <button
                               className="btn"
@@ -331,23 +379,58 @@ export default function ServicesPage() {
                               Reject
                             </button>
                           </div>
-                        ) : (
-                          <span>
-                            {normalizedRequestStatus(request.status) === 'APPROVED' ? 'Approved' : 'Rejected'}
-                          </span>
-                        )}
-                      </td>
-                    )}
-                  </tr>
-                ))}
-                {!requests.length && (
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                  {!pendingRequests.length && (
+                    <tr>
+                      <td colSpan={isAdmin ? 5 : 4}>No requests found</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+
+        <section className="glass-panel table-container">
+          <div className="table-header"><h2>{isAdmin ? 'Rejected Requests' : 'My Rejected Requests'}</h2></div>
+          {requestsLoading && <div className="table-scroll-area state-message">Loading requests...</div>}
+          {!requestsLoading && requestsError && (
+            <div className="table-scroll-area state-message">
+              <p className="error">{requestsError}</p>
+            </div>
+          )}
+          {!requestsLoading && !requestsError && (
+            <div className="table-scroll-area">
+              <table className="log-table">
+                <thead>
                   <tr>
-                    <td colSpan={isAdmin ? 5 : 4}>No requests found.</td>
+                    <th>Service</th>
+                    <th>Requested By</th>
+                    <th>Status</th>
+                    <th>Comment</th>
                   </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {rejectedRequests.map((request) => (
+                    <tr key={request.id}>
+                      <td>{request.serviceName}</td>
+                      <td>{request.requestedByEmail}</td>
+                      <td><span className={getStatusBadgeClass(request.status)}>{normalizedRequestStatus(request.status)}</span></td>
+                      <td>{request.reviewComment || request.description || '-'}</td>
+                    </tr>
+                  ))}
+                  {!rejectedRequests.length && (
+                    <tr>
+                      <td colSpan={4}>No requests found</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
       </section>
 

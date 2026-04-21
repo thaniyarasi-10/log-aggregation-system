@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -22,9 +23,12 @@ import org.springframework.web.server.ResponseStatusException;
 import com.kovanlabs.logcontroller.model.AppService;
 import com.kovanlabs.logcontroller.model.AppUser;
 import com.kovanlabs.logcontroller.model.ServiceAccessRequest;
+import com.kovanlabs.logcontroller.model.UserServiceMapping;
 import com.kovanlabs.logcontroller.auth.AuthenticatedUserContext;
+import com.kovanlabs.logcontroller.repository.AppServiceRepository;
 import com.kovanlabs.logcontroller.repository.AppUserRepository;
 import com.kovanlabs.logcontroller.repository.ServiceAccessRequestRepository;
+import com.kovanlabs.logcontroller.repository.UserServiceMappingRepository;
 import com.kovanlabs.logcontroller.service.OAuthUserEmailResolver;
 import com.kovanlabs.logcontroller.service.ServiceAccessAuthorizationService;
 
@@ -36,18 +40,24 @@ public class ServiceAccessController {
 
     private final ServiceAccessAuthorizationService authorizationService;
     private final OAuthUserEmailResolver emailResolver;
+    private final AppServiceRepository appServiceRepository;
     private final AppUserRepository appUserRepository;
     private final ServiceAccessRequestRepository serviceAccessRequestRepository;
+    private final UserServiceMappingRepository userServiceMappingRepository;
 
     public ServiceAccessController(
             ServiceAccessAuthorizationService authorizationService,
             OAuthUserEmailResolver emailResolver,
+            AppServiceRepository appServiceRepository,
             AppUserRepository appUserRepository,
-            ServiceAccessRequestRepository serviceAccessRequestRepository) {
+            ServiceAccessRequestRepository serviceAccessRequestRepository,
+            UserServiceMappingRepository userServiceMappingRepository) {
         this.authorizationService = authorizationService;
         this.emailResolver = emailResolver;
+        this.appServiceRepository = appServiceRepository;
         this.appUserRepository = appUserRepository;
         this.serviceAccessRequestRepository = serviceAccessRequestRepository;
+        this.userServiceMappingRepository = userServiceMappingRepository;
     }
 
     @GetMapping
@@ -57,14 +67,13 @@ public class ServiceAccessController {
                 return ResponseEntity.ok(List.of());
             }
 
-                String email = resolveCurrentEmail(authentication);
-                List<AppService> accessibleServices = authorizationService.getAccessibleServices(email);
+                List<AppService> accessibleServices = appServiceRepository.findByIsActiveTrue();
 
                 List<String> names = accessibleServices.stream()
                     .filter(Objects::nonNull)
                     .map(AppService::getName)
                     .filter(Objects::nonNull)
-                    .map(String::trim)
+                    .map(name -> name.toLowerCase(Locale.ROOT).trim())
                     .filter(name -> !name.isBlank())
                     .distinct()
                     .toList();
@@ -118,8 +127,9 @@ public class ServiceAccessController {
     public ResponseEntity<List<ServiceRequestView>> requests(Authentication authentication) {
         AppUser requester = resolveCurrentUser(authentication);
         AuthenticatedUserContext accessContext = authorizationService.getUserAccessContext(requester.getEmail());
+        boolean canManageServices = authorizationService.canManageServices(accessContext);
 
-        List<ServiceAccessRequest> entities = accessContext.isAdmin()
+        List<ServiceAccessRequest> entities = canManageServices
                 ? serviceAccessRequestRepository.findAllByOrderByCreatedAtDesc()
             : serviceAccessRequestRepository.findByRequestedByOrderByCreatedAtDesc(requester.getId());
 
@@ -138,6 +148,7 @@ public class ServiceAccessController {
     }
 
     @PostMapping("/requests")
+    @Transactional
     public ResponseEntity<ServiceRequestView> requestService(
             Authentication authentication,
             @RequestBody ServiceRequestCreateRequest request) {
@@ -149,14 +160,110 @@ public class ServiceAccessController {
 
         ServiceAccessRequest entity = new ServiceAccessRequest();
         entity.setRequestedBy(requester.getId());
-        entity.setServiceName(request.serviceName().trim());
+        entity.setServiceName(request.serviceName().toLowerCase(Locale.ROOT).trim());
         entity.setDescription(request.description() == null ? "" : request.description().trim());
         entity.setStatus(ServiceAccessRequest.RequestStatus.PENDING);
         entity.setCreatedAt(LocalDateTime.now());
         entity.setUpdatedAt(LocalDateTime.now());
 
         ServiceAccessRequest saved = serviceAccessRequestRepository.save(entity);
+        LOGGER.info(
+                "Inserted service request id={} service='{}' requestedBy={} status={}",
+                saved.getId(),
+                saved.getServiceName(),
+                saved.getRequestedBy(),
+                saved.getStatus());
         return ResponseEntity.status(HttpStatus.CREATED).body(toView(saved));
+    }
+
+    @PostMapping("/{requestId}/approve")
+    @Transactional
+    public ResponseEntity<ServiceSummaryView> approveRequest(
+            Authentication authentication,
+            @PathVariable("requestId") UUID requestId,
+            @RequestBody(required = false) ServiceRequestDecisionRequest request) {
+        AppUser reviewer = resolveCurrentUser(authentication);
+        AuthenticatedUserContext accessContext = authorizationService.getUserAccessContext(reviewer.getEmail());
+        if (!authorizationService.canManageServices(accessContext)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Admin access required");
+        }
+
+        ServiceAccessRequest serviceRequest = serviceAccessRequestRepository.findById(requestId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Request not found"));
+
+        if (serviceRequest.getStatus() != ServiceAccessRequest.RequestStatus.PENDING) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Request already processed");
+        }
+
+        String normalizedServiceName = serviceRequest.getServiceName().toLowerCase(Locale.ROOT).trim();
+        String description = request != null && request.description() != null
+                ? request.description().trim()
+                : (serviceRequest.getDescription() == null ? "" : serviceRequest.getDescription().trim());
+
+        AppService service = appServiceRepository.findByNameIgnoreCase(normalizedServiceName)
+                .orElseGet(() -> {
+                    AppService created = new AppService();
+                    created.setName(normalizedServiceName);
+                    created.setDescription(description);
+                    created.setActive(true);
+                    created.setCreatedAt(LocalDateTime.now());
+                    created.setUpdatedAt(LocalDateTime.now());
+                    return created;
+                });
+
+        service.setName(normalizedServiceName);
+        service.setDescription(description);
+        service.setActive(true);
+        service.setUpdatedAt(LocalDateTime.now());
+        AppService savedService = appServiceRepository.save(service);
+
+        String requesterId = serviceRequest.getRequestedBy();
+        List<String> currentServices = userServiceMappingRepository.findServiceNamesByUserId(requesterId);
+        if (currentServices.stream().noneMatch(name -> name.equalsIgnoreCase(savedService.getName()))) {
+            appUserRepository.findById(requesterId).ifPresent(requester -> {
+                UserServiceMapping mapping = new UserServiceMapping();
+                mapping.setUser(requester);
+                mapping.setService(savedService);
+                mapping.setCreatedAt(LocalDateTime.now());
+                mapping.setUpdatedAt(LocalDateTime.now());
+                userServiceMappingRepository.save(mapping);
+            });
+        }
+
+        serviceRequest.setStatus(ServiceAccessRequest.RequestStatus.APPROVED);
+        serviceRequest.setUpdatedAt(LocalDateTime.now());
+        serviceAccessRequestRepository.save(serviceRequest);
+
+        return ResponseEntity.ok(new ServiceSummaryView(
+                savedService.getId() == null ? null : savedService.getId().toString(),
+                savedService.getName(),
+                savedService.getDescription() == null ? "" : savedService.getDescription(),
+                savedService.isActive()));
+    }
+
+    @PostMapping("/{requestId}/reject")
+    @Transactional
+    public ResponseEntity<ServiceRequestView> rejectRequest(
+            Authentication authentication,
+            @PathVariable("requestId") UUID requestId,
+            @RequestBody(required = false) ServiceRequestDecisionRequest request) {
+        AppUser reviewer = resolveCurrentUser(authentication);
+        AuthenticatedUserContext accessContext = authorizationService.getUserAccessContext(reviewer.getEmail());
+        if (!authorizationService.canManageServices(accessContext)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Admin access required");
+        }
+
+        ServiceAccessRequest serviceRequest = serviceAccessRequestRepository.findById(requestId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Request not found"));
+
+        if (serviceRequest.getStatus() != ServiceAccessRequest.RequestStatus.PENDING) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Request already processed");
+        }
+
+        serviceRequest.setStatus(ServiceAccessRequest.RequestStatus.REJECTED);
+        serviceRequest.setUpdatedAt(LocalDateTime.now());
+        ServiceAccessRequest saved = serviceAccessRequestRepository.save(serviceRequest);
+        return ResponseEntity.ok(toView(saved));
     }
 
     @GetMapping("/requests/{requestId}")
@@ -188,8 +295,19 @@ public class ServiceAccessController {
 
     private AppUser resolveCurrentUser(Authentication authentication) {
         String email = resolveCurrentEmail(authentication);
-        return appUserRepository.findByEmailIgnoreCaseAndIsActiveTrue(email)
+        return appUserRepository.findByEmailIgnoreCase(email)
+                .map(this::ensureActiveUser)
                 .orElseGet(() -> provisionUserFromEmail(email));
+    }
+
+    private AppUser ensureActiveUser(AppUser user) {
+        if (user.isActive()) {
+            return user;
+        }
+
+        user.setActive(true);
+        user.setUpdatedAt(LocalDateTime.now());
+        return appUserRepository.save(user);
     }
 
     private AppUser provisionUserFromEmail(String email) {
@@ -241,6 +359,11 @@ public class ServiceAccessController {
             String serviceName,
             String description) {
     }
+
+        public record ServiceRequestDecisionRequest(
+            String comment,
+            String description) {
+        }
 
         public record ServiceSummaryView(
             String id,
