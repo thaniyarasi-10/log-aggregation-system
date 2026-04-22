@@ -27,6 +27,9 @@ public class LogProcessingService {
     private ElasticRepository repository;
 
     @Autowired
+    private MongoLogPersistenceService mongoLogPersistenceService;
+
+    @Autowired
     private AppServiceRepository appServiceRepository;
 
     @Autowired
@@ -51,6 +54,7 @@ public class LogProcessingService {
             return;
         }
 
+        mongoLogPersistenceService.save(event);
         repository.save(event);
         messagingTemplate.convertAndSend("/topic/logs", event);
     }
@@ -79,6 +83,7 @@ public class LogProcessingService {
         processed.stream()
                 .filter(this::isServiceApproved)
                 .forEach(event -> {
+                    mongoLogPersistenceService.save(event);
                     repository.save(event);
                     messagingTemplate.convertAndSend("/topic/logs", event);
                 });
