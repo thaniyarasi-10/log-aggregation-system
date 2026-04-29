@@ -1,7 +1,9 @@
 package com.kovanlabs.logcontroller.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import org.springframework.data.mongodb.core.mapping.Document;
 
+@Document(collection = "logs")
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class LogEvent {
 

@@ -26,7 +26,7 @@ import com.kovanlabs.logcontroller.auth.AuthenticatedUserContext;
 import com.kovanlabs.logcontroller.auth.PermissionName;
 import com.kovanlabs.logcontroller.model.AppService;
 import com.kovanlabs.logcontroller.model.LogEvent;
-import com.kovanlabs.logcontroller.repository.AppServiceRepository;
+import com.kovanlabs.logcontroller.jpa.repository.AppServiceRepository;
 import com.kovanlabs.logcontroller.repository.ElasticRepository;
 import com.kovanlabs.logcontroller.service.LogProcessingService;
 import com.kovanlabs.logcontroller.service.ServiceAccessAuthorizationService;

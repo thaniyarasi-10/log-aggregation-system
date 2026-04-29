@@ -102,6 +102,21 @@ export interface AuthUser {
   role?: string;
   permissions: string[];
   allowedServices: string[];
+  assignedServices?: string[];
   canManageUsers: boolean;
   canManageServices: boolean;
+}
+
+export type AgentMode = 'qa' | 'summary';
+
+export interface AgentQueryRequest {
+  query: string;
+  mode: AgentMode;
+  role: string;
+  services: string[];
+}
+
+export interface AgentQueryResponse {
+  answer?: string;
+  pdf_url?: string;
 }

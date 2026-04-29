@@ -20,7 +20,7 @@ public class LogConsumer {
         try {
             service.processKafkaRecord(message);
         } catch (RuntimeException ex) {
-            LOGGER.warn("Skipping Kafka log due to processing error: {}", ex.getMessage());
+            LOGGER.warn("Skipping Kafka log due to processing error: {}", ex);
         }
     }
 }

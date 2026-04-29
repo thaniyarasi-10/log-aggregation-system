@@ -35,9 +35,9 @@ import co.elastic.clients.elasticsearch._types.query_dsl.QueryBuilders;
 import co.elastic.clients.elasticsearch._types.query_dsl.RangeQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.TermQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.WildcardQuery;
-import co.elastic.clients.elasticsearch.core.IndexRequest;
 import co.elastic.clients.elasticsearch.core.CountRequest;
 import co.elastic.clients.elasticsearch.core.CountResponse;
+import co.elastic.clients.elasticsearch.core.IndexRequest;
 import co.elastic.clients.elasticsearch.core.SearchRequest;
 import co.elastic.clients.elasticsearch.core.SearchResponse;
 import co.elastic.clients.elasticsearch.core.search.Hit;
@@ -123,32 +123,58 @@ public class ElasticRepository {
                                  int page, int size,
                                  AuthenticatedUserContext accessContext) {
         try {
-                        TimeBounds bounds = resolveTimeBounds(from, to);
-            BoolQuery boolQuery = BoolQuery.of(b -> b
-                                                                                .filter(buildFilters(service, environment, level, traceId, message, bounds, accessContext)));
+		LOGGER.error("RAW INPUT → service: [{}], level: [{}]", service, level);
 
-            SearchRequest request = SearchRequest.of(s -> s
-                    .index(INDEX_PATTERN)
-                    .query(boolQuery._toQuery())
-                    .from(page * size)
-                    .size(size)
-                    .sort(sort -> sort
-                            .field(f -> f
-                                    .field(METRICS_TIMESTAMP_FIELD)
-                                            .order(SortOrder.Desc)))
-            );
+		TimeBounds bounds = resolveTimeBounds(from, to);
+		
+		BoolQuery.Builder boolQueryBuilder = QueryBuilders.bool();
 
-            SearchResponse<LogEvent> response = client.search(request, LogEvent.class);
+		if (service != null && !service.isBlank()) {
+			boolQueryBuilder.must(
+				QueryBuilders.term(t -> t
+					.field("service.keyword")
+					.value(service.trim())
+				)
+			);
+		}
 
-            return response.hits().hits()
-                    .stream()
-                    .map(Hit::source)
-                    .filter(Objects::nonNull)
-                    .toList();
+		if (level != null && !level.isBlank()) {
+			boolQueryBuilder.must(
+				QueryBuilders.term(t -> t
+					.field("level.keyword")
+					.value(level.trim().toUpperCase())
+				)
+			);
+		}
 
+		//boolQueryBuilder.must(rangeQuery(bounds)._toQuery());
+
+		BoolQuery boolQuery = boolQueryBuilder.build();
+
+		SearchRequest request = SearchRequest.of(s -> s
+				.index(INDEX_PATTERN)
+				.query(boolQuery._toQuery())
+				.from(page * size)
+				.size(50)
+				.sort(sort -> sort
+						.field(f -> f
+								.field(METRICS_TIMESTAMP_FIELD)
+										.order(SortOrder.Desc)))
+		);
+
+		LOGGER.error("FINAL QUERY JSON → {}", boolQuery._toQuery());
+
+		SearchResponse<LogEvent> response = client.search(request, LogEvent.class);
+		//LOGGER.error("TOTAL HITS → {}", response.getHits().getTotalHits().value());
+
+		return response.hits().hits()
+				.stream()
+				.map(Hit::source)
+				.filter(Objects::nonNull)
+				.toList();
         } catch (Exception e) {
-                        logErrorThrottled("search", e);
-            return new ArrayList<>();
+		logErrorThrottled("search", e);
+		return new ArrayList<>();
         }
     }
 
@@ -562,46 +588,39 @@ public class ElasticRepository {
 
     // SHARED FILTER BUILDER
 
-        private List<Query> buildFilters(String service, String environment, String level,
-                                                                         String traceId, String message,
+        private List<Query> buildFilters(String service, String level,
                                                                          TimeBounds bounds,
                                                                          AuthenticatedUserContext accessContext) {
-        List<Query> filters = Stream.of(
-                        buildServiceFilter(service, accessContext),
+        List<Query> filters = new ArrayList<>();
 
-                        Optional.ofNullable(environment)
-                                .filter(env -> !env.isBlank())
-                                .map(env -> wildcardKeywordQuery(ENV_KEYWORD, env)),
+        buildServiceFilter(service, accessContext).ifPresent(filters::add);
 
-                        Optional.ofNullable(level)
-                                .filter(l -> !l.isEmpty())
-                                .map(l -> wildcardKeywordQuery(LEVEL_KEYWORD, l)),
-
-                        Optional.ofNullable(traceId)
-                                .filter(tid -> !tid.isBlank())
-                                .map(tid -> wildcardKeywordQuery(TRACE_KEYWORD, tid)),
-
-                        Optional.ofNullable(message)
-                                .filter(msg -> !msg.isBlank())
-                                .map(this::buildMessageQuery)
-                )
-                .filter(Optional::isPresent)
-                .map(Optional::get)
-                                .collect(Collectors.toCollection(ArrayList::new));
+        Optional.ofNullable(level)
+                .filter(l -> !l.isEmpty())
+                .ifPresent(l -> {
+                        String normalizedLevel = l.trim().toUpperCase();
+                        LOGGER.debug("Normalized level filter: '{}' -> '{}'", l, normalizedLevel);
+                        filters.add(TermQuery.of(t -> t
+                                        .field(LEVEL_KEYWORD)
+                                        .value(normalizedLevel)
+                        )._toQuery());
+                });
 
                 buildAccessFilter(accessContext).ifPresent(filters::add);
-
                 filters.add(rangeQuery(bounds));
 
+                LOGGER.debug("Final filter count: {}", filters.size());
                 return filters;
         }
 
         private Optional<Query> buildServiceFilter(String service, AuthenticatedUserContext accessContext) {
                 if (!hasText(service) || "All Services".equalsIgnoreCase(service)) {
+                        LOGGER.debug("No service filter applied");
                         return Optional.empty();
                 }
 
-                String normalizedService = service.trim().toLowerCase();
+                String normalizedService = service.trim();
+                LOGGER.debug("Normalized service filter: '{}' -> '{}'", service, normalizedService);
 
                 if (!accessContext.isAdmin() && !accessContext.isServiceAllowed(normalizedService)) {
                         LOGGER.warn("DEV user {} requested unauthorized service '{}'", accessContext.email(), service);

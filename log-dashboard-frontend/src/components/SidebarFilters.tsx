@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import type { LogFilters } from '../types';
 
 type Props = {
@@ -7,8 +8,25 @@ type Props = {
 };
 
 export default function SidebarFilters({ filters, services, onChange }: Props) {
+  const [searchInput, setSearchInput] = useState(filters.search);
+
+  // Debounce search input with 300ms delay
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (searchInput !== filters.search) {
+        onChange({ ...filters, search: searchInput });
+      }
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+  }, [searchInput, filters, onChange]);
+
   const update = <K extends keyof LogFilters>(key: K, value: LogFilters[K]) => {
     onChange({ ...filters, [key]: value });
+  };
+
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setSearchInput(e.target.value);
   };
 
   return (
@@ -21,8 +39,8 @@ export default function SidebarFilters({ filters, services, onChange }: Props) {
           id="filter-search"
           className="form-control"
           type="text"
-          value={filters.search}
-          onChange={(e) => update('search', e.target.value)}
+          value={searchInput}
+          onChange={handleSearchChange}
           placeholder="Search message..."
         />
       </div>

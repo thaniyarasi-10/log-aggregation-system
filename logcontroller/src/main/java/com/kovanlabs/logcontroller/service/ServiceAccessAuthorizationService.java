@@ -26,11 +26,11 @@ import com.kovanlabs.logcontroller.auth.PermissionName;
 import com.kovanlabs.logcontroller.auth.UserRole;
 import com.kovanlabs.logcontroller.model.AppService;
 import com.kovanlabs.logcontroller.model.AppUser;
-import com.kovanlabs.logcontroller.repository.AppServiceRepository;
-import com.kovanlabs.logcontroller.repository.AppUserRepository;
-import com.kovanlabs.logcontroller.repository.RolePermissionMappingRepository;
-import com.kovanlabs.logcontroller.repository.UserRoleMappingRepository;
-import com.kovanlabs.logcontroller.repository.UserServiceMappingRepository;
+import com.kovanlabs.logcontroller.jpa.repository.AppServiceRepository;
+import com.kovanlabs.logcontroller.jpa.repository.AppUserRepository;
+import com.kovanlabs.logcontroller.jpa.repository.RolePermissionMappingRepository;
+import com.kovanlabs.logcontroller.jpa.repository.UserRoleMappingRepository;
+import com.kovanlabs.logcontroller.jpa.repository.UserServiceMappingRepository;
 
 @Service
 public class ServiceAccessAuthorizationService {

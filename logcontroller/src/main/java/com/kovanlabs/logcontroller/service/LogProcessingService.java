@@ -7,6 +7,8 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.stream.Collectors;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -14,11 +16,13 @@ import org.springframework.stereotype.Service;
 
 import com.kovanlabs.logcontroller.model.LogEvent;
 import com.kovanlabs.logcontroller.parser.LogParser;
-import com.kovanlabs.logcontroller.repository.AppServiceRepository;
+import com.kovanlabs.logcontroller.jpa.repository.AppServiceRepository;
 import com.kovanlabs.logcontroller.repository.ElasticRepository;
 
 @Service
 public class LogProcessingService {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(LogProcessingService.class);
 
     @Autowired
     private LogParser parser;
@@ -54,7 +58,9 @@ public class LogProcessingService {
             return;
         }
 
+        LOGGER.debug("Kafka log parsed. Persisting to MongoDB for service={}", event.getService());
         mongoLogPersistenceService.save(event);
+        LOGGER.debug("MongoDB save call completed for service={}", event.getService());
         repository.save(event);
         messagingTemplate.convertAndSend("/topic/logs", event);
     }
@@ -83,7 +89,9 @@ public class LogProcessingService {
         processed.stream()
                 .filter(this::isServiceApproved)
                 .forEach(event -> {
+                    LOGGER.debug("Buffered log parsed. Persisting to MongoDB for service={}", event.getService());
                     mongoLogPersistenceService.save(event);
+                    LOGGER.debug("MongoDB save call completed for buffered service={}", event.getService());
                     repository.save(event);
                     messagingTemplate.convertAndSend("/topic/logs", event);
                 });

@@ -12,7 +12,7 @@ type AuthContextValue = {
   isDev: boolean;
   canAccessUsers: boolean;
   canAccessServices: boolean;
-  loginUrl: string;
+  login: () => void;
   refreshSession: () => Promise<void>;
   logout: () => Promise<void>;
 };
@@ -21,6 +21,7 @@ const DEFAULT_AUTH_USER: AuthUser = {
   authenticated: false,
   permissions: [],
   allowedServices: [],
+  assignedServices: [],
   canManageUsers: false,
   canManageServices: false
 };
@@ -39,6 +40,11 @@ function normalizeAuthPayload(payload: Partial<AuthUser> | null): AuthUser {
     role: payload.role,
     permissions: Array.isArray(payload.permissions) ? payload.permissions : [],
     allowedServices: Array.isArray(payload.allowedServices) ? payload.allowedServices : [],
+    assignedServices: Array.isArray(payload.assignedServices)
+      ? payload.assignedServices
+      : Array.isArray(payload.allowedServices)
+        ? payload.allowedServices
+        : [],
     canManageUsers: Boolean(payload.canManageUsers),
     canManageServices: Boolean(payload.canManageServices)
   };
@@ -75,12 +81,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const login = useCallback(() => {
+    window.location.href = 'http://localhost:8080/api/auth/login';
+  }, []);
+
   useEffect(() => {
     void refreshSession();
   }, [refreshSession]);
 
   const role = String(user?.role || '').toUpperCase();
-  const backendOrigin = String(import.meta.env.VITE_BACKEND_ORIGIN || 'http://localhost:8080').replace(/\/$/, '');
   const isAdmin = role.includes('ADMIN') || Boolean(user?.canManageUsers) || Boolean(user?.canManageServices);
   const isDev = role.includes('DEV') || role.includes('DEVELOPER') || (!isAdmin && status === 'authenticated');
   const permissions = Array.isArray(user?.permissions) ? user.permissions.map((item) => String(item).toLowerCase()) : [];
@@ -94,10 +103,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isDev,
     canAccessUsers: isAdmin || Boolean(user?.canManageUsers),
     canAccessServices: isAdmin || Boolean(user?.canManageServices) || canReadServices,
-    loginUrl: `${backendOrigin}/api/auth/login`,
+    login,
     refreshSession,
     logout
-  }), [status, user, role, isAdmin, isDev, canReadServices, backendOrigin, refreshSession, logout]);
+  }), [status, user, role, isAdmin, isDev, canReadServices, login, refreshSession, logout]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

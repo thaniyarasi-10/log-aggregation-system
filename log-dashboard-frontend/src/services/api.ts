@@ -1,5 +1,7 @@
 import axios, { AxiosError, type AxiosRequestConfig } from 'axios';
 import type {
+  AgentQueryRequest,
+  AgentQueryResponse,
   AuthUser,
   LogEvent,
   LogFilters,
@@ -379,6 +381,13 @@ export const apiService = {
     } catch {
       return emptyMetrics;
     }
+  },
+
+  async queryAgent(payload: AgentQueryRequest): Promise<AgentQueryResponse> {
+      console.log('[apiService.queryAgent] Request:', { mode: payload.mode });
+    const response = await api.post<AgentQueryResponse>('/agent/query', payload);
+    console.log('[apiService.queryAgent] Response:', { status: response.status, data: response.data });
+    return response.data;
   }
 };
 

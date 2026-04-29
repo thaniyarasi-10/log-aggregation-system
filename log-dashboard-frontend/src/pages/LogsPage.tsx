@@ -163,7 +163,7 @@ export default function LogsPage() {
       <section className="dashboard-main">
         <MetricsCards metrics={computedMetricsFromLogs} />
         <MetricsCharts metrics={computedMetricsFromLogs} />
-        <LogsTable logs={sortedLogs as LogEvent[]} loading={loading} error={error} />
+        <LogsTable logs={sortedLogs as LogEvent[]} loading={loading} error={error} searchTerm={filters.search} />
       </section>
     </section>
   );

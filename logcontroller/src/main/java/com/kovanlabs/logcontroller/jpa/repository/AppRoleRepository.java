@@ -1,4 +1,4 @@
-package com.kovanlabs.logcontroller.repository;
+package com.kovanlabs.logcontroller.jpa.repository;
 
 import com.kovanlabs.logcontroller.model.AppRole;
 import org.springframework.data.jpa.repository.JpaRepository;

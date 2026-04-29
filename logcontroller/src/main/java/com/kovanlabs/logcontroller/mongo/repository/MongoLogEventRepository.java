@@ -1,4 +1,4 @@
-package com.kovanlabs.logcontroller.repository;
+package com.kovanlabs.logcontroller.mongo.repository;
 
 import org.springframework.data.mongodb.repository.MongoRepository;
 

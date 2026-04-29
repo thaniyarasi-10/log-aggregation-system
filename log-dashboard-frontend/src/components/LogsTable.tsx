@@ -4,9 +4,41 @@ type Props = {
   logs: LogEvent[];
   loading: boolean;
   error: string;
+  searchTerm?: string;
 };
 
-export default function LogsTable({ logs, loading, error }: Props) {
+export default function LogsTable({ logs, loading, error, searchTerm }: Props) {
+  const highlightText = (text: string, term?: string) => {
+    if (!term || !term.trim()) {
+      return text;
+    }
+
+    const normalized = term.toLowerCase();
+    const parts: (string | JSX.Element)[] = [];
+    let lastIndex = 0;
+
+    const lowerText = text.toLowerCase();
+    let index = lowerText.indexOf(normalized);
+
+    while (index !== -1) {
+      if (index > lastIndex) {
+        parts.push(text.substring(lastIndex, index));
+      }
+      parts.push(
+        <mark key={`${index}-${term}`} className="log-search-hit">
+          {text.substring(index, index + term.length)}
+        </mark>
+      );
+      lastIndex = index + term.length;
+      index = lowerText.indexOf(normalized, lastIndex);
+    }
+
+    if (lastIndex < text.length) {
+      parts.push(text.substring(lastIndex));
+    }
+
+    return parts.length > 0 ? parts : text;
+  };
   if (loading) {
     return (
       <section className="glass-panel table-container">
@@ -59,7 +91,7 @@ export default function LogsTable({ logs, loading, error }: Props) {
                 <td>{new Date(log.timestamp).toLocaleString()}</td>
                 <td>{log.service}</td>
                 <td><span className={`tag ${levelClass(String(log.level))}`}>{log.level}</span></td>
-                <td><div className="message-cell">{log.message}</div></td>
+                <td><div className="message-cell">{highlightText(log.message, searchTerm)}</div></td>
                 <td>{log.statusCode ?? '-'}</td>
                 <td>{log.responseTime ? `${Math.round(log.responseTime)}ms` : '-'}</td>
               </tr>

@@ -1,4 +1,4 @@
-package com.kovanlabs.logcontroller.repository;
+package com.kovanlabs.logcontroller.jpa.repository;
 
 import java.util.List;
 import java.util.Optional;

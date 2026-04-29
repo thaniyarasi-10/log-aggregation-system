@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pymongo
+google-generativeai
+reportlab
+pytz
+matplotlib
+dateparser

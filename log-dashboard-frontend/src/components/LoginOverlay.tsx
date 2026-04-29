@@ -1,11 +1,11 @@
 type Props = {
-  loginUrl: string;
+  login: () => void;
   statusMessage: string;
 };
 
-export default function LoginOverlay({ loginUrl, statusMessage }: Props) {
+export default function LoginOverlay({ login, statusMessage }: Props) {
   const startLogin = () => {
-    window.location.href = loginUrl;
+    login();
   };
 
   return (

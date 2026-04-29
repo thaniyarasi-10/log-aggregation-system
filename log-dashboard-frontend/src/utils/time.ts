@@ -27,9 +27,16 @@ export function buildLogQueryParams(filters: LogFilters): LogQueryParams {
     size: 500
   };
 
-  if (filters.service) params.service = filters.service;
-  if (filters.level) params.level = filters.level;
-  if (filters.search) params.message = filters.search;
+  // Map filters to backend query parameters
+  if (filters.service && filters.service.trim()) {
+    params.service = filters.service.trim();
+  }
+  if (filters.level && filters.level.trim()) {
+    params.level = filters.level.trim();
+  }
+  if (filters.search && filters.search.trim()) {
+    params.message = filters.search.trim();
+  }
 
   return params;
 }

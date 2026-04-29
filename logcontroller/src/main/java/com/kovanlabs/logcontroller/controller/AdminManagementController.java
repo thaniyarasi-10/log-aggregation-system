@@ -30,12 +30,12 @@ import com.kovanlabs.logcontroller.model.AppUser;
 import com.kovanlabs.logcontroller.model.ServiceAccessRequest;
 import com.kovanlabs.logcontroller.model.UserRoleMapping;
 import com.kovanlabs.logcontroller.model.UserServiceMapping;
-import com.kovanlabs.logcontroller.repository.AppRoleRepository;
-import com.kovanlabs.logcontroller.repository.AppServiceRepository;
-import com.kovanlabs.logcontroller.repository.AppUserRepository;
-import com.kovanlabs.logcontroller.repository.ServiceAccessRequestRepository;
-import com.kovanlabs.logcontroller.repository.UserRoleMappingRepository;
-import com.kovanlabs.logcontroller.repository.UserServiceMappingRepository;
+import com.kovanlabs.logcontroller.jpa.repository.AppRoleRepository;
+import com.kovanlabs.logcontroller.jpa.repository.AppServiceRepository;
+import com.kovanlabs.logcontroller.jpa.repository.AppUserRepository;
+import com.kovanlabs.logcontroller.jpa.repository.ServiceAccessRequestRepository;
+import com.kovanlabs.logcontroller.jpa.repository.UserRoleMappingRepository;
+import com.kovanlabs.logcontroller.jpa.repository.UserServiceMappingRepository;
 import com.kovanlabs.logcontroller.service.ServiceAccessAuthorizationService;
 
 @RestController

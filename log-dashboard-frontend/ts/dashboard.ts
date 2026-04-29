@@ -114,9 +114,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let realtime: RealtimeManager;
     const filters = new Filters((opts) => {
-        if (realtime) {
-            void refreshDashboardData(opts);
-        }
+        void refreshDashboardData(opts);
     });
 
     realtime = new RealtimeManager((newLogs: LogEvent[]) => {
@@ -134,6 +132,14 @@ document.addEventListener('DOMContentLoaded', () => {
             void refreshMetrics(filters.getCurrentFilters());
         }
     });
+
+    // Apply filters once on initial load to populate logs and metrics with defaults
+    try {
+        filters.applyFilters();
+    } catch (e) {
+        // swallow any early errors; refreshDashboardData has its own guards
+        console.warn('Initial applyFilters() failed:', e);
+    }
 
     // Fetch User Profile removed since it was causing loading issue
 
@@ -628,10 +634,8 @@ document.addEventListener('DOMContentLoaded', () => {
             }, 10000);
             if (metricsRefreshTimer !== null) {
                 globalThis.clearInterval(metricsRefreshTimer);
+                metricsRefreshTimer = null;
             }
-            metricsRefreshTimer = globalThis.setInterval(() => {
-                void refreshMetrics(filters.getCurrentFilters());
-            }, 3000);
 
             if (tableRefreshTimer !== null) {
                 globalThis.clearInterval(tableRefreshTimer);

@@ -3,13 +3,20 @@ import { apiService, extractApiErrorMessage } from '../services/api';
 import type { LogEvent, LogFilters } from '../types';
 import { RANGE_TO_MS } from '../utils/time';
 
-export function useRealtimeLogs(filters: LogFilters, enabled = true, intervalMs = 5000) {
+export function useRealtimeLogs(filters: LogFilters, enabled = true, intervalMs = 30000) {
   const [logs, setLogs] = useState<LogEvent[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string>('');
   const lastStableLogsRef = useRef<LogEvent[]>([]);
+  const filtersRef = useRef<LogFilters>(filters);
+  const wsConnectedRef = useRef<boolean>(false);
 
   const filterKey = useMemo(() => JSON.stringify(filters), [filters]);
+
+  // Keep filtersRef in sync with current filters for WebSocket handlers
+  useEffect(() => {
+    filtersRef.current = filters;
+  }, [filters]);
 
   useEffect(() => {
     if (!enabled) {
@@ -19,6 +26,10 @@ export function useRealtimeLogs(filters: LogFilters, enabled = true, intervalMs 
     let active = true;
     let pollingTimer: number | null = null;
     let socket: WebSocket | null = null;
+
+    // Reset state when filters change
+    lastStableLogsRef.current = [];
+    setLogs([]);
 
     const buildWsUrl = () => {
       const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -49,7 +60,7 @@ export function useRealtimeLogs(filters: LogFilters, enabled = true, intervalMs 
     const normalize = (value: string) => value.toLowerCase().trim();
 
     const withinTimeRange = (timestamp: string) => {
-      const rangeMs = RANGE_TO_MS[filters.timeRange] ?? RANGE_TO_MS['15m'];
+      const rangeMs = RANGE_TO_MS[filtersRef.current.timeRange] ?? RANGE_TO_MS['15m'];
       const eventTs = new Date(timestamp).getTime();
       if (!Number.isFinite(eventTs)) {
         return true;
@@ -58,13 +69,14 @@ export function useRealtimeLogs(filters: LogFilters, enabled = true, intervalMs 
     };
 
     const matchesFilters = (event: LogEvent) => {
-      if (filters.service && normalize(event.service || '') !== normalize(filters.service)) {
+      const currentFilters = filtersRef.current;
+      if (currentFilters.service && normalize(event.service || '') !== normalize(currentFilters.service)) {
         return false;
       }
-      if (filters.level && normalize(String(event.level || '')) !== normalize(filters.level)) {
+      if (currentFilters.level && normalize(String(event.level || '')) !== normalize(currentFilters.level)) {
         return false;
       }
-      if (filters.search && !normalize(event.message || '').includes(normalize(filters.search))) {
+      if (currentFilters.search && !normalize(event.message || '').includes(normalize(currentFilters.search))) {
         return false;
       }
       return withinTimeRange(event.timestamp);
@@ -79,6 +91,7 @@ export function useRealtimeLogs(filters: LogFilters, enabled = true, intervalMs 
         socket = new WebSocket(buildWsUrl());
 
         socket.onopen = () => {
+          wsConnectedRef.current = true;
           sendStompFrame('CONNECT', {
             'accept-version': '1.2',
             'heart-beat': '10000,10000'
@@ -134,6 +147,7 @@ export function useRealtimeLogs(filters: LogFilters, enabled = true, intervalMs 
         };
 
         socket.onclose = () => {
+          wsConnectedRef.current = false;
           socket = null;
         };
       } catch {
@@ -143,7 +157,7 @@ export function useRealtimeLogs(filters: LogFilters, enabled = true, intervalMs 
 
     const pullLogs = async () => {
       try {
-        const data = await apiService.fetchLogs(filters);
+        const data = await apiService.fetchLogs(filtersRef.current);
         if (!active) return;
 
         if (Array.isArray(data) && data.length > 0) {
@@ -153,9 +167,8 @@ export function useRealtimeLogs(filters: LogFilters, enabled = true, intervalMs 
           return;
         }
 
-        if (!lastStableLogsRef.current.length) {
-          setLogs([]);
-        }
+        // No data returned — show empty state
+        setLogs([]);
         setError('');
       } catch (err) {
         if (!active) return;
@@ -179,7 +192,10 @@ export function useRealtimeLogs(filters: LogFilters, enabled = true, intervalMs 
 
       void pullLogs();
       pollingTimer = window.setInterval(() => {
-        void pullLogs();
+        // Only poll if WebSocket is not connected
+        if (!wsConnectedRef.current) {
+          void pullLogs();
+        }
       }, intervalMs);
     };
 

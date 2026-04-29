@@ -108,6 +108,7 @@ export default function UsersPage() {
   const openEdit = (user: UserRecord) => {
     setEditingUser(user);
     setEditForm({
+      id: user.id,
       username: user.username || user.name || '',
       email: user.email || '',
       roles: (user.roles || (user.role ? [user.role] : [])).join(', '),

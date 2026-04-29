@@ -6,7 +6,7 @@ import org.springframework.stereotype.Service;
 
 import com.kovanlabs.logcontroller.model.LogEvent;
 import com.kovanlabs.logcontroller.model.MongoLogEvent;
-import com.kovanlabs.logcontroller.repository.MongoLogEventRepository;
+import com.kovanlabs.logcontroller.mongo.repository.MongoLogEventRepository;
 
 @Service
 public class MongoLogPersistenceService {
@@ -25,10 +25,23 @@ public class MongoLogPersistenceService {
         }
 
         try {
-            mongoLogEventRepository.save(MongoLogEvent.from(event));
+            MongoLogEvent mongoLogEvent = MongoLogEvent.from(event);
+            LOGGER.debug(
+                    "About to persist log to MongoDB. service={}, level={}, timestamp={}",
+                    mongoLogEvent.getServiceName(),
+                    mongoLogEvent.getLevel(),
+                    mongoLogEvent.getTimestamp()
+            );
+            mongoLogEventRepository.save(mongoLogEvent);
+            LOGGER.debug(
+                    "Successfully persisted log to MongoDB. service={}, level={}",
+                    mongoLogEvent.getServiceName(),
+                    mongoLogEvent.getLevel()
+            );
         } catch (RuntimeException ex) {
             // Mongo persistence should not block the real-time pipeline.
             LOGGER.warn("Failed to store log event in MongoDB: {}", ex.getMessage());
         }
+
     }
 }
