@@ -67,16 +67,29 @@ public class ServiceAccessController {
                 return ResponseEntity.ok(List.of());
             }
 
-                List<AppService> accessibleServices = appServiceRepository.findByIsActiveTrue();
+            // Resolve the caller's email and delegate to the authorization service.
+            // This is the ONLY correct way to get the service list — never query
+            // appServiceRepository directly here, as that bypasses RBAC entirely.
+            String email = resolveCurrentEmail(authentication);
+            AuthenticatedUserContext accessContext = authorizationService.getUserAccessContext(email);
 
-                List<String> names = accessibleServices.stream()
+            List<AppService> accessibleServices = authorizationService.getAccessibleServices(email);
+
+            List<String> names = accessibleServices.stream()
                     .filter(Objects::nonNull)
                     .map(AppService::getName)
                     .filter(Objects::nonNull)
-                    .map(name -> name.toLowerCase(Locale.ROOT).trim())
+                    .map(String::trim)
                     .filter(name -> !name.isBlank())
                     .distinct()
+                    .sorted()
                     .toList();
+
+            LOGGER.info(
+                    "GET /api/services — user='{}' role={} returnedServices={}",
+                    email,
+                    accessContext.role(),
+                    names);
 
             return ResponseEntity.ok(names);
         } catch (RuntimeException ex) {
@@ -129,51 +142,130 @@ public class ServiceAccessController {
         AuthenticatedUserContext accessContext = authorizationService.getUserAccessContext(requester.getEmail());
         boolean canManageServices = authorizationService.canManageServices(accessContext);
 
+        // ADMIN (canManageServices=true) → all requests, ordered newest first
+        // DEV  (canManageServices=false) → only their own requests
         List<ServiceAccessRequest> entities = canManageServices
                 ? serviceAccessRequestRepository.findAllByOrderByCreatedAtDesc()
-            : serviceAccessRequestRepository.findByRequestedByOrderByCreatedAtDesc(requester.getId());
+                : serviceAccessRequestRepository.findByRequestedByOrderByCreatedAtDesc(requester.getId());
 
         List<ServiceRequestView> requests = entities.stream()
-            .map(this::toView)
+                .map(this::toView)
                 .toList();
+
+        LOGGER.info(
+                "GET /api/services/requests — user='{}' role={} canManage={} returnedCount={}",
+                requester.getEmail(),
+                accessContext.role(),
+                canManageServices,
+                requests.size());
 
         return ResponseEntity.ok(requests);
     }
 
+    /**
+     * POST /api/services/request  (alias kept for frontend compatibility)
+     *
+     * IMPORTANT: this method must NOT delegate to requestService() via `this.` —
+     * that would be a same-bean call that bypasses Spring's @Transactional proxy,
+     * meaning the transaction would never be opened and any exception would not
+     * roll back the save. Both endpoints carry the full implementation.
+     */
     @PostMapping("/request")
+    @Transactional
     public ResponseEntity<ServiceRequestView> requestServiceAlias(
             Authentication authentication,
-            @RequestBody ServiceRequestCreateRequest request) {
-        return requestService(authentication, request);
+            @RequestBody ServiceRequestCreateRequest body) {
+        return createServiceRequest(authentication, body);
     }
 
+    /**
+     * POST /api/services/requests
+     */
     @PostMapping("/requests")
     @Transactional
     public ResponseEntity<ServiceRequestView> requestService(
             Authentication authentication,
-            @RequestBody ServiceRequestCreateRequest request) {
+            @RequestBody ServiceRequestCreateRequest body) {
+        return createServiceRequest(authentication, body);
+    }
+
+    /**
+     * Shared implementation for both POST endpoints.
+     *
+     * <p>This is a private helper — it is called only from methods that are already
+     * running inside a Spring-managed transaction (both callers are @Transactional
+     * public methods on this bean, so the proxy has already opened the transaction
+     * before this helper is reached).
+     */
+    private ResponseEntity<ServiceRequestView> createServiceRequest(
+            Authentication authentication,
+            ServiceRequestCreateRequest body) {
+
+        LOGGER.info("POST /api/services/request(s) — hit by user='{}'",
+                authentication != null ? authentication.getName() : "anonymous");
+
         AppUser requester = resolveCurrentUser(authentication);
 
-        if (request == null || request.serviceName() == null || request.serviceName().isBlank()) {
+        // --- Validate payload ---
+        if (body == null || body.serviceName() == null || body.serviceName().isBlank()) {
+            LOGGER.warn("POST /api/services/request(s) — rejected: serviceName is blank, user='{}'",
+                    requester.getEmail());
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Service name is required");
         }
 
+        String normalizedName = body.serviceName().toLowerCase(Locale.ROOT).trim();
+        String description    = body.description() == null ? "" : body.description().trim();
+
+        LOGGER.info("POST /api/services/request(s) — payload: serviceName='{}' description='{}' requestedBy='{}'",
+                normalizedName, description, requester.getId());
+
+        // --- Duplicate check: reject if a PENDING request already exists for this user+service ---
+        boolean alreadyPending = serviceAccessRequestRepository
+                .findByRequestedByAndServiceNameIgnoreCase(requester.getId(), normalizedName)
+                .stream()
+                .anyMatch(r -> r.getStatus() == ServiceAccessRequest.RequestStatus.PENDING);
+
+        if (alreadyPending) {
+            LOGGER.warn(
+                    "POST /api/services/request(s) — duplicate PENDING request: service='{}' user='{}'",
+                    normalizedName, requester.getId());
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "A pending request for '" + normalizedName + "' already exists");
+        }
+
+        // --- Persist ---
         ServiceAccessRequest entity = new ServiceAccessRequest();
         entity.setRequestedBy(requester.getId());
-        entity.setServiceName(request.serviceName().toLowerCase(Locale.ROOT).trim());
-        entity.setDescription(request.description() == null ? "" : request.description().trim());
+        entity.setServiceName(normalizedName);
+        entity.setDescription(description);
         entity.setStatus(ServiceAccessRequest.RequestStatus.PENDING);
         entity.setCreatedAt(LocalDateTime.now());
         entity.setUpdatedAt(LocalDateTime.now());
 
-        ServiceAccessRequest saved = serviceAccessRequestRepository.save(entity);
-        LOGGER.info(
-                "Inserted service request id={} service='{}' requestedBy={} status={}",
-                saved.getId(),
-                saved.getServiceName(),
-                saved.getRequestedBy(),
-                saved.getStatus());
-        return ResponseEntity.status(HttpStatus.CREATED).body(toView(saved));
+        try {
+            ServiceAccessRequest saved = serviceAccessRequestRepository.save(entity);
+            // Flush immediately so any DB constraint violation surfaces here, inside the
+            // transaction, rather than silently at commit time after we've already returned.
+            serviceAccessRequestRepository.flush();
+
+            LOGGER.info(
+                    "POST /api/services/request(s) — saved: id={} service='{}' requestedBy='{}' status={}",
+                    saved.getId(), saved.getServiceName(), saved.getRequestedBy(), saved.getStatus());
+
+            return ResponseEntity.status(HttpStatus.CREATED).body(toView(saved));
+
+        } catch (org.springframework.dao.DataIntegrityViolationException ex) {
+            LOGGER.error(
+                    "POST /api/services/request(s) — DB constraint violation saving request for service='{}' user='{}': {}",
+                    normalizedName, requester.getId(), ex.getMessage());
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Service already requested", ex);
+        } catch (RuntimeException ex) {
+            LOGGER.error(
+                    "POST /api/services/request(s) — unexpected error saving request for service='{}' user='{}': {}",
+                    normalizedName, requester.getId(), ex.getMessage(), ex);
+            throw ex;
+        }
     }
 
     @PostMapping("/{requestId}/approve")

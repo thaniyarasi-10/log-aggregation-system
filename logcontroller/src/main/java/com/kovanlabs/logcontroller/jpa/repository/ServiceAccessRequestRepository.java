@@ -14,5 +14,7 @@ public interface ServiceAccessRequestRepository extends JpaRepository<ServiceAcc
 
     List<ServiceAccessRequest> findAllByOrderByCreatedAtDesc();
 
+    List<ServiceAccessRequest> findByRequestedByAndServiceNameIgnoreCase(String requestedBy, String serviceName);
+
     List<ServiceAccessRequest> findByRequestedByOrderByCreatedAtDesc(String requestedBy);
 }

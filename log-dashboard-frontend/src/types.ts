@@ -117,6 +117,8 @@ export interface AgentQueryRequest {
 }
 
 export interface AgentQueryResponse {
+  success?: boolean;
   answer?: string;
   pdf_url?: string;
+  message?: string;
 }

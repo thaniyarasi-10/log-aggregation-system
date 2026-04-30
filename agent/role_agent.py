@@ -200,39 +200,188 @@ def _build_summary_context(logs: list[dict[str, Any]] | None) -> dict[str, Any]:
 
 
 def answer_query(query: str, logs: list[dict[str, Any]] | None) -> str:
+    """
+    Answer a natural-language question directly from log data.
+    Computes factual answers from the logs rather than returning a generic summary.
+    """
     summary = _build_summary_context(logs)
     if not summary or summary['totalLogs'] <= 0:
         return 'No data available for your role'
 
-    normalized_query = re.sub(r'\s+', ' ', str(query or '').strip().lower())
-    services = summary['services']
-    timeline = summary['timeline']
+    normalized = re.sub(r'\s+', ' ', str(query or '').strip().lower())
+    services = summary['services']   # list of {name, errors, total}
+    timeline = summary['timeline']   # list of {time, errors}
 
-    lines = [
-        f"I reviewed {summary['totalLogs']} scoped logs and found {summary['errorCount']} errors, {summary['warningCount']} warnings, and {summary['infoCount']} info entries.",
-    ]
+    # ------------------------------------------------------------------ #
+    # Helper: build a ranked error-message counter from raw logs          #
+    # ------------------------------------------------------------------ #
+    def _top_errors() -> list[tuple[str, int]]:
+        counter: Counter[str] = Counter()
+        for row in _normalize_logs(logs):
+            if row['level'] == 'ERROR':
+                counter[row['message']] += 1
+        return counter.most_common(5)
 
-    if any(keyword in normalized_query for keyword in ['cause', 'why', 'root']):
-        top_service = services[0].get('name', 'Unknown Service') if services and isinstance(services[0], dict) else 'Unknown Service'
-        recurring_services = ', '.join(str(item.get('name', 'Unknown')) for item in services[:3] if isinstance(item, dict) and item.get('errors', 0)) or 'no recurring service-level spike'
-        lines.append(f'Likely causes are concentrated in {top_service}; recurring error pressure is visible in {recurring_services}.')
+    def _top_services_by_errors() -> list[tuple[str, int]]:
+        return [(s['name'], s['errors']) for s in services if s.get('errors', 0) > 0]
 
-    if any(keyword in normalized_query for keyword in ['service', 'where', 'affected']):
-        affected = ', '.join(str(item.get('name', 'Unknown')) for item in services[:5] if isinstance(item, dict)) or 'No affected services identified'
-        lines.append(f'Affected services: {affected}.')
+    def _top_services_by_total() -> list[tuple[str, int]]:
+        return [(s['name'], s['total']) for s in services]
 
-    if any(keyword in normalized_query for keyword in ['time', 'when', 'timestamp']) or timeline:
-        first_bucket = timeline[0].get('time', 'unknown time') if timeline and isinstance(timeline[0], dict) else 'unknown time'
-        last_bucket = timeline[-1].get('time', 'unknown time') if timeline and isinstance(timeline[-1], dict) else 'unknown time'
-        peak_bucket = max(timeline, key=lambda item: item.get('errors', 0) if isinstance(item, dict) else 0).get('time', 'unknown time') if timeline else 'unknown time'
-        lines.append(f'Timestamps span from {first_bucket} to {last_bucket}, with the busiest error bucket at {peak_bucket}.')
+    # ------------------------------------------------------------------ #
+    # Intent: most frequent / common error                                #
+    # (check AFTER service intents so "which service has most errors"    #
+    #  doesn't accidentally match here)                                  #
+    # ------------------------------------------------------------------ #
+    if any(kw in normalized for kw in [
+        'frequent error', 'common error', 'top error',
+        'recurring error', 'repeated error', 'error type', 'what error',
+        'which error', 'error message', 'most frequent'
+    ]) or ('most error' in normalized and 'service' not in normalized):
+        top = _top_errors()
+        if top:
+            msg, count = top[0]
+            others = ', '.join(f'"{m}" ({c})' for m, c in top[1:3]) if len(top) > 1 else ''
+            answer = f'"{msg}" is the most frequent error with {count} occurrence{"s" if count != 1 else ""}.'
+            if others:
+                answer += f' Other recurring errors: {others}.'
+            return answer
+        return 'No ERROR-level logs found in the current scope.'
 
-    if not any(keyword in normalized_query for keyword in ['cause', 'why', 'root', 'service', 'where', 'affected', 'time', 'when', 'timestamp']):
-        first_service = services[0].get('name', 'Unknown Service') if services and isinstance(services[0], dict) else 'Unknown Service'
-        lines.append(f'The noisiest scoped service is {first_service}, so start there for investigation.')
+    # ------------------------------------------------------------------ #
+    # Intent: most unstable / failing / problematic service               #
+    # ------------------------------------------------------------------ #
+    if any(kw in normalized for kw in [
+        'unstable', 'failing service', 'most errors', 'highest error',
+        'problematic', 'worst service', 'most unstable', 'error rate',
+        'most failures', 'most issues'
+    ]):
+        ranked = _top_services_by_errors()
+        if ranked:
+            name, count = ranked[0]
+            total = next((s['total'] for s in services if s['name'] == name), count)
+            rate = round((count / total) * 100) if total > 0 else 0
+            answer = f'"{name}" is the most unstable service with {count} error{"s" if count != 1 else ""} ({rate}% error rate).'
+            if len(ranked) > 1:
+                runner_up = f'"{ranked[1][0]}" ({ranked[1][1]} errors)'
+                answer += f' Runner-up: {runner_up}.'
+            return answer
+        return 'No services with errors found in the current scope.'
 
-    lines.append('Use the summary mode for a downloadable PDF with charts and recommendations.')
-    return ' '.join(str(line) for line in lines)
+    # ------------------------------------------------------------------ #
+    # Intent: error count / how many errors                               #
+    # ------------------------------------------------------------------ #
+    if any(kw in normalized for kw in [
+        'how many error', 'error count', 'total error', 'number of error',
+        'count of error', 'error total'
+    ]):
+        return (
+            f'There are {summary["errorCount"]} error{"s" if summary["errorCount"] != 1 else ""} '
+            f'out of {summary["totalLogs"]} total log entries '
+            f'({summary["warningCount"]} warning{"s" if summary["warningCount"] != 1 else ""}, '
+            f'{summary["infoCount"]} info).'
+        )
+
+    # ------------------------------------------------------------------ #
+    # Intent: which services / affected services                          #
+    # ------------------------------------------------------------------ #
+    if any(kw in normalized for kw in [
+        'which service', 'what service', 'affected service', 'services affected',
+        'list service', 'all service', 'services with error'
+    ]):
+        ranked = _top_services_by_errors()
+        if ranked:
+            parts = [f'"{n}" ({c} errors)' for n, c in ranked[:5]]
+            return f'Services with errors: {", ".join(parts)}.'
+        all_svcs = _top_services_by_total()
+        if all_svcs:
+            parts = [f'"{n}"' for n, _ in all_svcs[:5]]
+            return f'Active services in scope (no errors detected): {", ".join(parts)}.'
+        return 'No service data found in the current scope.'
+
+    # ------------------------------------------------------------------ #
+    # Intent: busiest / most active service (by log volume)              #
+    # ------------------------------------------------------------------ #
+    if any(kw in normalized for kw in [
+        'busiest', 'most active', 'most logs', 'highest volume',
+        'most traffic', 'noisiest'
+    ]):
+        ranked = _top_services_by_total()
+        if ranked:
+            name, count = ranked[0]
+            return f'"{name}" is the busiest service with {count} log {"entry" if count == 1 else "entries"} in scope.'
+        return 'No service data found in the current scope.'
+
+    # ------------------------------------------------------------------ #
+    # Intent: time / when / peak                                          #
+    # ------------------------------------------------------------------ #
+    if any(kw in normalized for kw in [
+        'when', 'time', 'timestamp', 'peak', 'spike', 'busiest time',
+        'most errors when', 'error peak'
+    ]):
+        if timeline:
+            peak = max(timeline, key=lambda t: t.get('errors', 0))
+            first = timeline[0].get('time', 'unknown')
+            last = timeline[-1].get('time', 'unknown')
+            return (
+                f'Errors span from {first} to {last}. '
+                f'Peak error bucket: {peak["time"]} with {peak["errors"]} error{"s" if peak["errors"] != 1 else ""}.'
+            )
+        return 'No timeline data available in the current scope.'
+
+    # ------------------------------------------------------------------ #
+    # Intent: summary / overview                                          #
+    # ------------------------------------------------------------------ #
+    if any(kw in normalized for kw in [
+        'summary', 'overview', 'status', 'health', 'overall'
+    ]):
+        top_err = _top_errors()
+        top_svc = _top_services_by_errors()
+        parts = [
+            f'{summary["totalLogs"]} total logs: {summary["errorCount"]} errors, '
+            f'{summary["warningCount"]} warnings, {summary["infoCount"]} info.'
+        ]
+        if top_err:
+            parts.append(f'Most frequent error: "{top_err[0][0]}" ({top_err[0][1]} times).')
+        if top_svc:
+            parts.append(f'Most impacted service: "{top_svc[0][0]}" ({top_svc[0][1]} errors).')
+        return ' '.join(parts)
+
+    # ------------------------------------------------------------------ #
+    # Intent: warnings                                                    #
+    # ------------------------------------------------------------------ #
+    if any(kw in normalized for kw in ['warning', 'warn']):
+        counter: Counter[str] = Counter()
+        for row in _normalize_logs(logs):
+            if row['level'] in {'WARN', 'WARNING'}:
+                counter[row['message']] += 1
+        top_warn = counter.most_common(3)
+        if top_warn:
+            parts = [f'"{m}" ({c})' for m, c in top_warn]
+            return f'Top warnings: {", ".join(parts)}. Total: {summary["warningCount"]}.'
+        return f'No warnings found. Total warning count: {summary["warningCount"]}.'
+
+    # ------------------------------------------------------------------ #
+    # Fallback: compute and return the most useful direct answer          #
+    # ------------------------------------------------------------------ #
+    top_err = _top_errors()
+    top_svc = _top_services_by_errors()
+
+    if top_err and top_svc:
+        return (
+            f'Most frequent error: "{top_err[0][0]}" ({top_err[0][1]} occurrences). '
+            f'Most impacted service: "{top_svc[0][0]}" ({top_svc[0][1]} errors out of {summary["totalLogs"]} total logs).'
+        )
+    if top_err:
+        return f'Most frequent error: "{top_err[0][0]}" ({top_err[0][1]} occurrences) across {summary["totalLogs"]} total logs.'
+    if top_svc:
+        return f'Most impacted service: "{top_svc[0][0]}" ({top_svc[0][1]} errors). Total logs in scope: {summary["totalLogs"]}.'
+
+    return (
+        f'{summary["totalLogs"]} logs in scope: {summary["errorCount"]} errors, '
+        f'{summary["warningCount"]} warnings, {summary["infoCount"]} info. '
+        f'No specific error patterns detected.'
+    )
 
 
 

@@ -152,7 +152,8 @@ public class ElasticRepository {
 			boolQueryBuilder.filter(rangeQuery(bounds));
 		}
 
-		// Apply RBAC access filter for non-admin users
+		// Apply RBAC access filter — always enforced for all roles including admin.
+		// buildAccessFilter returns a terms filter scoped to the user's allowed services.
 		buildAccessFilter(accessContext).ifPresent(boolQueryBuilder::filter);
 
 		BoolQuery boolQuery = boolQueryBuilder.build();
@@ -336,6 +337,9 @@ public class ElasticRepository {
         List<Query> filters = new ArrayList<>();
 
         // SERVICE FILTER
+        // When a specific service is requested, scope to that service — but only if the user
+        // is actually allowed to access it (the access filter below will enforce this anyway,
+        // but an explicit term keeps the query intent clear and avoids a full terms scan).
         if (service != null && !service.isBlank() && !"All Services".equalsIgnoreCase(service)) {
             filters.add(
                     TermQuery.of(t -> t
@@ -343,11 +347,14 @@ public class ElasticRepository {
                             .value(service.trim())
                     )._toQuery()
             );
-        } else {
-            if (!accessContext.isAdmin()) {
-                buildAccessFilter(accessContext).ifPresent(filters::add);
-            }
         }
+
+        // ACCESS FILTER — always applied, for every role including admin.
+        // Admin contexts have their full list of active services in allowedServices (populated
+        // by ServiceAccessAuthorizationService.resolveServicesForUser). This ensures that even
+        // admins only see logs from services that are registered and active in the database,
+        // never raw index documents from unregistered services.
+        buildAccessFilter(accessContext).ifPresent(filters::add);
 
         // TIME FILTER — declared as finals so lambda can capture them
         final String metricFromStr = bounds.getFromInstant().truncatedTo(ChronoUnit.SECONDS).toString();
@@ -612,9 +619,25 @@ public class ElasticRepository {
     // SHARED FILTER BUILDER
 
 
+        /**
+         * Builds a terms filter that restricts the Elasticsearch query to only the services
+         * the authenticated user is allowed to access.
+         *
+         * <p>This filter is ALWAYS applied — including for admin users. Admin users have their
+         * full list of active services pre-populated in {@code allowedServices} by
+         * {@link com.kovanlabs.logcontroller.service.ServiceAccessAuthorizationService}.
+         * Skipping the filter for admins would allow unfiltered access to every document in
+         * the index, including services that are not registered in the database.
+         *
+         * <p>The wildcard sentinel {@code "*"} is treated as "all services" only when the
+         * context is an admin — in that case the caller should ensure {@code allowedServices}
+         * contains the real service names, not a wildcard. If a wildcard is present for a
+         * non-admin it is treated as no-access to prevent privilege escalation.
+         */
         private Optional<Query> buildAccessFilter(AuthenticatedUserContext accessContext) {
-                if (accessContext == null || accessContext.isAdmin()) {
-                        return Optional.empty();
+                if (accessContext == null) {
+                        // No context at all — deny everything
+                        return Optional.of(noAccessQuery());
                 }
 
                 List<String> allowedServices = accessContext.allowedServices();
@@ -622,13 +645,26 @@ public class ElasticRepository {
                         return Optional.of(noAccessQuery());
                 }
 
+                // Wildcard is only meaningful for admin; non-admin wildcard is treated as no-access
+                // to prevent privilege escalation via a misconfigured context.
                 boolean hasWildcardAccess = allowedServices.stream()
                         .filter(Objects::nonNull)
                         .map(String::trim)
                         .anyMatch(value -> "*".equals(value));
 
                 if (hasWildcardAccess) {
-                        return Optional.empty();
+                        if (accessContext.isAdmin()) {
+                                // Admin with wildcard: should not happen in normal flow because
+                                // toAuthenticatedContext populates real service names, but if it
+                                // does occur we fall through to noAccessQuery to force a DB reload
+                                // rather than silently returning unfiltered results.
+                                LOGGER.warn(
+                                        "Admin context for '{}' has wildcard allowedServices — "
+                                        + "expected concrete service names. Returning no-access filter. "
+                                        + "Check ServiceAccessAuthorizationService.resolveServicesForUser.",
+                                        accessContext.email());
+                        }
+                        return Optional.of(noAccessQuery());
                 }
 
                 List<FieldValue> fieldValues = allowedServices.stream()

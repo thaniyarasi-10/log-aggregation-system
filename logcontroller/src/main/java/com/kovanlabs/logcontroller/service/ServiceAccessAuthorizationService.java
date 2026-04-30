@@ -179,11 +179,21 @@ public class ServiceAccessAuthorizationService {
             return context;
         }
 
-        List<String> elevatedPermissions = fallbackPermissions(List.of("ADMIN"), true, List.of("*"));
+        // Fetch all active services from DB so the ES access filter always has concrete names.
+        // Never use the wildcard sentinel "*" — buildAccessFilter treats that as no-access.
+        List<String> allServiceNames = appServiceRepository.findByIsActiveTrue().stream()
+                .map(AppService::getName)
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(name -> !name.isBlank())
+                .distinct()
+                .toList();
+
+        List<String> elevatedPermissions = fallbackPermissions(List.of("ADMIN"), true, allServiceNames);
         return new AuthenticatedUserContext(
                 context.email(),
                 UserRole.ADMIN,
-                List.of("*"),
+                allServiceNames,
                 elevatedPermissions);
     }
 
@@ -299,7 +309,9 @@ public class ServiceAccessAuthorizationService {
                 : extractAllowedServicesFromAuthentication();
 
         if (!admin && allowedServices.isEmpty() && failOpenWhenDbUnavailable) {
-            allowedServices = List.of("*");
+            // Non-admin with no mapped services: return empty list rather than wildcard.
+            // buildAccessFilter treats wildcard as no-access, so this is equivalent but explicit.
+            allowedServices = List.of();
         }
 
         List<String> permissions = fallbackPermissions(List.of(), admin, allowedServices);
@@ -311,11 +323,28 @@ public class ServiceAccessAuthorizationService {
 
     private AuthenticatedUserContext buildDbUnavailableFallbackContext(String email) {
         boolean admin = currentAuthenticationIsAdmin();
-        List<String> allowedServices = extractAllowedServicesFromAuthentication();
+        List<String> allowedServices;
 
-        if (allowedServices.isEmpty() && failOpenWhenDbUnavailable) {
-            // During temporary DB outages, keep authenticated users operational in read-only mode.
-            allowedServices = List.of("*");
+        if (admin) {
+            // Even during a DB outage, try to fetch service names so the ES filter has
+            // concrete values. If this also fails, return an empty list — it is safer to
+            // show no data than to return unfiltered results.
+            try {
+                allowedServices = appServiceRepository.findByIsActiveTrue().stream()
+                        .map(AppService::getName)
+                        .filter(Objects::nonNull)
+                        .map(String::trim)
+                        .filter(name -> !name.isBlank())
+                        .distinct()
+                        .toList();
+            } catch (RuntimeException ex) {
+                LOGGER.warn("Could not load service list during DB-unavailable fallback for admin '{}': {}", email, ex.getMessage());
+                allowedServices = List.of();
+            }
+        } else {
+            allowedServices = extractAllowedServicesFromAuthentication();
+            // For non-admin, wildcard is intentionally NOT used here — it would be treated
+            // as no-access by buildAccessFilter, which is the correct secure default.
         }
 
         List<String> permissions;
@@ -332,7 +361,25 @@ public class ServiceAccessAuthorizationService {
 
     private AuthenticatedUserContext buildAuthenticatedReadFallbackContext(String email) {
         boolean admin = currentAuthenticationIsAdmin();
-        List<String> allowedServices = List.of("*");
+        // Fetch real service names from DB — never use wildcard, which buildAccessFilter
+        // now treats as no-access to prevent privilege escalation.
+        List<String> allowedServices;
+        if (admin) {
+            try {
+                allowedServices = appServiceRepository.findByIsActiveTrue().stream()
+                        .map(AppService::getName)
+                        .filter(Objects::nonNull)
+                        .map(String::trim)
+                        .filter(name -> !name.isBlank())
+                        .distinct()
+                        .toList();
+            } catch (RuntimeException ex) {
+                LOGGER.warn("Could not load service list for authenticated read fallback for '{}': {}", email, ex.getMessage());
+                allowedServices = List.of();
+            }
+        } else {
+            allowedServices = extractAllowedServicesFromAuthentication();
+        }
         List<String> permissions = admin
                 ? fallbackPermissions(List.of(), true, allowedServices)
                 : DEFAULT_READ_PERMISSIONS;
