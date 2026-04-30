@@ -3,16 +3,14 @@ package com.kovanlabs.logcontroller.repository;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.ZoneId;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -29,12 +27,10 @@ import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch._types.Time;
 import co.elastic.clients.elasticsearch._types.aggregations.FieldDateMath;
 import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
-import co.elastic.clients.elasticsearch._types.query_dsl.MatchQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch._types.query_dsl.QueryBuilders;
 import co.elastic.clients.elasticsearch._types.query_dsl.RangeQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.TermQuery;
-import co.elastic.clients.elasticsearch._types.query_dsl.WildcardQuery;
 import co.elastic.clients.elasticsearch.core.CountRequest;
 import co.elastic.clients.elasticsearch.core.CountResponse;
 import co.elastic.clients.elasticsearch.core.IndexRequest;
@@ -48,14 +44,9 @@ public class ElasticRepository {
 
         private static final Logger LOGGER = LoggerFactory.getLogger(ElasticRepository.class);
 
-    private static final String TIMESTAMP_FIELD = "timestamp";
-    private static final String METRICS_TIMESTAMP_FIELD = "timestamp";
-    private static final String LEVEL_KEYWORD   = "level.keyword";
-    private static final String SERVICE_KEYWORD = "service.keyword";
+        private static final String LEVEL_KEYWORD   = "level.keyword";
+        private static final String SERVICE_KEYWORD = "service.keyword";
                 private static final String PROJECT_KEYWORD = "project.keyword";
-        private static final String ENV_KEYWORD     = "environment.keyword";
-        private static final String TRACE_KEYWORD   = "traceId.keyword";
-        private static final String MESSAGE_FIELD   = "message";
     private static final String INDEX_PATTERN   = "app-logs-*";
                 private static final String NO_ACCESS_SENTINEL = "__NO_ACCESS__";
         private static final String ERROR_LEVEL = "ERROR";
@@ -81,7 +72,8 @@ public class ElasticRepository {
         private static final long WRITE_BACKOFF_MS = 30_000L;
         private static final long ERROR_LOG_THROTTLE_MS = 30_000L;
 
-        private volatile long writesMutedUntilMs = 0L;
+
+    private volatile long writesMutedUntilMs = 0L;
         private volatile long nextErrorLogAtMs = 0L;
         private volatile Map<String, Object> lastStableMetrics = defaultMetricsPayload();
 
@@ -129,7 +121,7 @@ public class ElasticRepository {
 		
 		BoolQuery.Builder boolQueryBuilder = QueryBuilders.bool();
 
-		if (service != null && !service.isBlank()) {
+		if (service != null && !service.isBlank() && !"All Services".equalsIgnoreCase(service)) {
 			boolQueryBuilder.must(
 				QueryBuilders.term(t -> t
 					.field("service.keyword")
@@ -146,8 +138,22 @@ public class ElasticRepository {
 				)
 			);
 		}
+            if (message != null && !message.isBlank()) {
+                boolQueryBuilder.must(
+                    QueryBuilders.match(m -> m
+                        .field("message")
+                        .query(message.trim())
+                        .operator(co.elastic.clients.elasticsearch._types.query_dsl.Operator.And)
+                    )
+                );
+            }
 
-		//boolQueryBuilder.must(rangeQuery(bounds)._toQuery());
+		if (from != null || to != null) {
+			boolQueryBuilder.filter(rangeQuery(bounds));
+		}
+
+		// Apply RBAC access filter for non-admin users
+		buildAccessFilter(accessContext).ifPresent(boolQueryBuilder::filter);
 
 		BoolQuery boolQuery = boolQueryBuilder.build();
 
@@ -155,10 +161,10 @@ public class ElasticRepository {
 				.index(INDEX_PATTERN)
 				.query(boolQuery._toQuery())
 				.from(page * size)
-				.size(50)
+				.size(Math.min(size, 500))
 				.sort(sort -> sort
 						.field(f -> f
-								.field(METRICS_TIMESTAMP_FIELD)
+								.field("timestamp")
 										.order(SortOrder.Desc)))
 		);
 
@@ -309,12 +315,12 @@ public class ElasticRepository {
                                 .size(10)))
                 .aggregations(AGG_THROUGHPUT_OVER_TIME, a -> a
                         .dateHistogram(dh -> dh
-                                .field(METRICS_TIMESTAMP_FIELD)
+                                .field("timestamp")
                                 .fixedInterval(Time.of(t -> t.time(interval)))
                                 .minDocCount(0)
                                 .extendedBounds(eb -> eb
-                                        .min(FieldDateMath.of(f -> f.expr(bounds.fromIso())))
-                                        .max(FieldDateMath.of(f -> f.expr(bounds.toIso()))))
+                                        .min(FieldDateMath.of(f -> f.expr(bounds.getFromInstant().toString())))
+                                        .max(FieldDateMath.of(f -> f.expr(bounds.getToInstant().toString()))))
                         )
                         .aggregations(AGG_BUCKET_ERROR_COUNT, sub -> sub
                                 .filter(f -> f
@@ -326,14 +332,33 @@ public class ElasticRepository {
         );
     }
 
-        private List<Query> buildMetricFilters(String service, TimeBounds bounds, AuthenticatedUserContext accessContext) {
+    private List<Query> buildMetricFilters(String service, TimeBounds bounds, AuthenticatedUserContext accessContext) {
         List<Query> filters = new ArrayList<>();
 
-        buildServiceFilter(service, accessContext).ifPresent(filters::add);
-
+        // SERVICE FILTER
+        if (service != null && !service.isBlank() && !"All Services".equalsIgnoreCase(service)) {
+            filters.add(
+                    TermQuery.of(t -> t
+                            .field("service.keyword")
+                            .value(service.trim())
+                    )._toQuery()
+            );
+        } else {
+            if (!accessContext.isAdmin()) {
                 buildAccessFilter(accessContext).ifPresent(filters::add);
+            }
+        }
 
-                filters.add(rangeQuery(bounds));
+        // TIME FILTER — declared as finals so lambda can capture them
+        final String metricFromStr = bounds.getFromInstant().truncatedTo(ChronoUnit.SECONDS).toString();
+        final String metricToStr = bounds.getToInstant().truncatedTo(ChronoUnit.SECONDS).toString();
+        filters.add(
+                RangeQuery.of(r -> r
+                        .field("timestamp")
+                        .gte(JsonData.of(metricFromStr))
+                        .lte(JsonData.of(metricToStr))
+                        .timeZone("Asia/Kolkata"))._toQuery()
+        );
 
         return filters;
     }
@@ -431,7 +456,7 @@ public class ElasticRepository {
                         };
                 }
 
-                long rangeMs = resolveRangeMillis(bounds.fromIso(), bounds.toIso());
+                long rangeMs = resolveRangeMillis(bounds.getFromInstant(), bounds.getToInstant());
                 if (rangeMs <= 0) {
                         return DEFAULT_METRICS_INTERVAL;
                 }
@@ -477,14 +502,12 @@ public class ElasticRepository {
                 return "1d";
         }
 
-        private long resolveRangeMillis(String from, String to) {
+        private long resolveRangeMillis(Instant from, Instant to) {
                 try {
-                        if (from == null || from.isBlank() || to == null || to.isBlank()) {
+                        if (from == null || to == null) {
                                 return -1L;
                         }
-                        Instant fromInstant = Instant.parse(from);
-                        Instant toInstant = Instant.parse(to);
-                        return Math.max(0L, Duration.between(fromInstant, toInstant).toMillis());
+                        return Math.max(0L, Duration.between(from, to).toMillis());
                 } catch (Exception ignored) {
                         return -1L;
                 }
@@ -588,89 +611,6 @@ public class ElasticRepository {
 
     // SHARED FILTER BUILDER
 
-        private List<Query> buildFilters(String service, String level,
-                                                                         TimeBounds bounds,
-                                                                         AuthenticatedUserContext accessContext) {
-        List<Query> filters = new ArrayList<>();
-
-        buildServiceFilter(service, accessContext).ifPresent(filters::add);
-
-        Optional.ofNullable(level)
-                .filter(l -> !l.isEmpty())
-                .ifPresent(l -> {
-                        String normalizedLevel = l.trim().toUpperCase();
-                        LOGGER.debug("Normalized level filter: '{}' -> '{}'", l, normalizedLevel);
-                        filters.add(TermQuery.of(t -> t
-                                        .field(LEVEL_KEYWORD)
-                                        .value(normalizedLevel)
-                        )._toQuery());
-                });
-
-                buildAccessFilter(accessContext).ifPresent(filters::add);
-                filters.add(rangeQuery(bounds));
-
-                LOGGER.debug("Final filter count: {}", filters.size());
-                return filters;
-        }
-
-        private Optional<Query> buildServiceFilter(String service, AuthenticatedUserContext accessContext) {
-                if (!hasText(service) || "All Services".equalsIgnoreCase(service)) {
-                        LOGGER.debug("No service filter applied");
-                        return Optional.empty();
-                }
-
-                String normalizedService = service.trim();
-                LOGGER.debug("Normalized service filter: '{}' -> '{}'", service, normalizedService);
-
-                if (!accessContext.isAdmin() && !accessContext.isServiceAllowed(normalizedService)) {
-                        LOGGER.warn("DEV user {} requested unauthorized service '{}'", accessContext.email(), service);
-                        return Optional.of(noAccessQuery());
-                }
-
-                return Optional.of(TermQuery.of(t -> t
-                                .field(SERVICE_KEYWORD)
-                                .value(normalizedService)
-                )._toQuery());
-        }
-
-        private Query buildMessageQuery(String message) {
-                String sanitized = sanitizeForWildcard(message);
-                Query wildcardOnKeyword = WildcardQuery.of(w -> w
-                                .field("message.keyword")
-                                .value("*" + sanitized + "*")
-                                .caseInsensitive(true)
-                )._toQuery();
-
-                Query fuzzyText = MatchQuery.of(m -> m
-                                .field(MESSAGE_FIELD)
-                                .query(message)
-                )._toQuery();
-
-                return BoolQuery.of(b -> b
-                                .should(wildcardOnKeyword)
-                                .should(fuzzyText)
-                                .minimumShouldMatch("1")
-                )._toQuery();
-        }
-
-        private Query wildcardKeywordQuery(String field, String value) {
-                String sanitized = sanitizeForWildcard(value);
-                return WildcardQuery.of(w -> w
-                                .field(field)
-                                .value("*" + sanitized + "*")
-                                .caseInsensitive(true)
-                )._toQuery();
-        }
-
-        private String sanitizeForWildcard(String raw) {
-                if (raw == null) {
-                        return "";
-                }
-                return raw.trim()
-                                .replace("\\", "\\\\")
-                                .replace("*", "\\*")
-                                .replace("?", "\\?");
-        }
 
         private Optional<Query> buildAccessFilter(AuthenticatedUserContext accessContext) {
                 if (accessContext == null || accessContext.isAdmin()) {
@@ -713,18 +653,19 @@ public class ElasticRepository {
                 )._toQuery();
         }
 
+    // In rangeQuery() method, add timezone to the range query
     private Query rangeQuery(TimeBounds bounds) {
-        return BoolQuery.of(b -> b
-                .should(RangeQuery.of(r -> r
+        Instant from = bounds.getFromInstant().truncatedTo(ChronoUnit.SECONDS);
+        Instant to = bounds.getToInstant()
+                .truncatedTo(ChronoUnit.SECONDS)
+                .plusSeconds(2);
+
+        return RangeQuery.of(r -> r
                         .field("timestamp")
-                        .gte(JsonData.of(bounds.fromIso()))
-                        .lte(JsonData.of(bounds.toIso())))._toQuery())
-                .should(RangeQuery.of(r -> r
-                        .field("@timestamp")
-                        .gte(JsonData.of(bounds.fromIso()))
-                        .lte(JsonData.of(bounds.toIso())))._toQuery())
-                .minimumShouldMatch("1")
-        )._toQuery();
+                        .gte(JsonData.of(from.toString()))
+                        .lte(JsonData.of(to.toString()))
+                        .timeZone("Asia/Kolkata"))  // ← ADD THIS
+                ._toQuery();
     }
         private TimeBounds resolveTimeBounds(String requestedFrom, String requestedTo) {
                 Instant now = Instant.now();
@@ -748,7 +689,7 @@ public class ElasticRepository {
                         from = to;
                 }
 
-                return new TimeBounds(from.toString(), to.toString());
+                return new TimeBounds(from, to);
         }
 
         private Instant parseInstantOrNull(String value) {
@@ -775,55 +716,18 @@ public class ElasticRepository {
                 return value != null && !value.isBlank();
         }
 
-        private List<String> resolveWindowIndexes(String windowExpression) {
-                Duration window = parseWindowExpression(windowExpression);
-                if (window == null) {
-                        return List.of(INDEX_PATTERN);
+
+
+
+        private record TimeBounds(Instant fromInstant, Instant toInstant) {
+                public Instant getFromInstant() {
+                        return fromInstant;
                 }
 
-                Instant now = Instant.now();
-                Instant from = now.minus(window);
-                ZoneId zone = ZoneId.systemDefault();
-
-                Set<String> indexes = new LinkedHashSet<>();
-                LocalDate current = from.atZone(zone).toLocalDate();
-                LocalDate end = now.atZone(zone).toLocalDate();
-
-                while (!current.isAfter(end)) {
-                        indexes.add("app-logs-" + current);
-                        current = current.plusDays(1);
-                }
-
-                return new ArrayList<>(indexes);
-        }
-
-        private Duration parseWindowExpression(String windowExpression) {
-                if (!hasText(windowExpression)) {
-                        return null;
-                }
-
-                try {
-                        String trimmed = windowExpression.trim().toLowerCase();
-                        if (trimmed.length() < 2) {
-                                return null;
-                        }
-
-                        long amount = Long.parseLong(trimmed.substring(0, trimmed.length() - 1));
-                        char unit = trimmed.charAt(trimmed.length() - 1);
-
-                        return switch (unit) {
-                                case 's' -> Duration.ofSeconds(amount);
-                                case 'm' -> Duration.ofMinutes(amount);
-                                case 'h' -> Duration.ofHours(amount);
-                                case 'd' -> Duration.ofDays(amount);
-                                default -> null;
-                        };
-                } catch (Exception ignored) {
-                        return null;
+                public Instant getToInstant() {
+                        return toInstant;
                 }
         }
-
-        private record TimeBounds(String fromIso, String toIso) {}
 
         private List<Query> buildErrorWindowFilters(String windowExpression) {
                 return Stream.of(
@@ -831,7 +735,7 @@ public class ElasticRepository {
                                                                 .field(LEVEL_KEYWORD)
                                                                 .value("ERROR"))._toQuery(),
                                                 RangeQuery.of(r -> r
-                                                                .field(TIMESTAMP_FIELD)
+                                                                .field("timestamp")
                                                                 .gte(JsonData.of("now-" + windowExpression))
                                                                 .lte(JsonData.of("now")))._toQuery()
                                 )

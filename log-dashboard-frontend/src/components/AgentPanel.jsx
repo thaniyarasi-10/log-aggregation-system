@@ -44,7 +44,7 @@ export default function AgentPanel() {
   const autoDownload = (url) => {
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'role-based-log-summary.pdf';
+    link.download = 'log-summary.pdf';
     link.rel = 'noreferrer';
     document.body.appendChild(link);
     link.click();

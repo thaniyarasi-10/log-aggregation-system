@@ -14,24 +14,34 @@ const defaultFilters: LogFilters = {
   search: ''
 };
 
+const emptyMetrics: MetricsResponse = {
+  totalLogs: 0,
+  errorCount: 0,
+  errorRate: 0,
+  avgResponseTime: 0,
+  p95Latency: 0,
+  bucketInterval: '1m',
+  throughputOverTime: [],
+  levelDistribution: []
+};
+
 export default function LogsPage() {
   const [filters, setFilters] = useState<LogFilters>(defaultFilters);
   const [serviceOptions, setServiceOptions] = useState<string[]>([]);
-  const [metrics, setMetrics] = useState<MetricsResponse>({
-    totalLogs: 0,
-    errorCount: 0,
-    errorRate: 0,
-    avgResponseTime: 0,
-    p95Latency: 0,
-    bucketInterval: '1m',
-    throughputOverTime: [],
-    levelDistribution: []
-  });
+  const [metrics, setMetrics] = useState<MetricsResponse>(emptyMetrics);
 
   const lastStableMetricsRef = useRef<MetricsResponse | null>(null);
 
+  // Metrics only depend on service + timeRange — level and search are intentionally excluded.
+  // This key drives the metrics fetch effect so it only re-runs when the relevant filters change.
+  const metricsKey = `${filters.service}|${filters.timeRange}`;
+
+  // Logs react to all filters (service, timeRange, level, search)
   const { logs, loading, error } = useRealtimeLogs(filters, true, 5000);
 
+  // Load the service dropdown once on mount.
+  // The backend /logs/services endpoint already scopes the list to the user's allowed services,
+  // so admins see all services and devs see only their mapped ones.
   useEffect(() => {
     let active = true;
 
@@ -60,11 +70,24 @@ export default function LogsPage() {
     };
   }, []);
 
+  // Fetch metrics from the API whenever service or timeRange changes.
+  // Level and search are deliberately NOT included — metrics must ignore those filters.
+  // The backend /logs/metrics endpoint accepts only: service, from, to, timePreset.
+  // When service is '' (All Services), the backend aggregates across all services the
+  // authenticated user is allowed to access (admin = all, dev = mapped services only).
   useEffect(() => {
     let active = true;
 
+    // Build a metrics-only filter: strip level and search so they are never sent
+    const metricsFilters: LogFilters = {
+      timeRange: filters.timeRange,
+      service: filters.service,
+      level: '',
+      search: ''
+    };
+
     const refreshMetrics = async () => {
-      const next = await apiService.fetchMetrics(filters);
+      const next = await apiService.fetchMetrics(metricsFilters);
       if (!active) return;
 
       const hasSignal =
@@ -81,6 +104,8 @@ export default function LogsPage() {
         return;
       }
 
+      // Backend returned zeros — keep the last known good data to avoid flickering,
+      // but only if the service/time scope hasn't changed since that data was fetched.
       if (lastStableMetricsRef.current) {
         setMetrics(lastStableMetricsRef.current);
       } else {
@@ -88,81 +113,36 @@ export default function LogsPage() {
       }
     };
 
+    // Reset stable cache immediately when scope changes so stale data from a
+    // different service/time range is never shown for the new selection.
+    lastStableMetricsRef.current = null;
+    setMetrics(emptyMetrics);
+
     void refreshMetrics();
     const timer = window.setInterval(() => {
       void refreshMetrics();
-    }, 3000);
+    }, 10000);
 
     return () => {
       active = false;
       window.clearInterval(timer);
     };
-  }, [filters]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [metricsKey]); // only re-run when service or timeRange changes
 
+  // Sort logs for the table — this is purely presentational and does not affect metrics
   const sortedLogs = useMemo(() => {
     return [...logs].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
   }, [logs]);
-
-  const computedMetricsFromLogs = useMemo<MetricsResponse>(() => {
-    const fallback = metrics;
-    if (!sortedLogs.length) {
-      return fallback;
-    }
-
-    const errors = sortedLogs.filter((log) => String(log.level).toUpperCase() === 'ERROR').length;
-    const total = sortedLogs.length;
-    const validLatency = sortedLogs
-      .map((log) => Number(log.responseTime || 0))
-      .filter((value) => Number.isFinite(value) && value > 0)
-      .sort((a, b) => a - b);
-
-    const avgResponseTime = validLatency.length
-      ? validLatency.reduce((sum, value) => sum + value, 0) / validLatency.length
-      : fallback.avgResponseTime;
-
-    const p95Latency = validLatency.length
-      ? validLatency[Math.max(0, Math.ceil(validLatency.length * 0.95) - 1)]
-      : fallback.p95Latency;
-
-    const firstTs = new Date(sortedLogs[0].timestamp).getTime();
-    const lastTs = new Date(sortedLogs[sortedLogs.length - 1].timestamp).getTime();
-    const spanSec = Math.max(1, (lastTs - firstTs) / 1000);
-    const throughput = total / spanSec;
-
-    const levelCount = new Map<string, number>();
-    sortedLogs.forEach((log) => {
-      const key = String(log.level || 'UNKNOWN').toUpperCase();
-      levelCount.set(key, (levelCount.get(key) || 0) + 1);
-    });
-
-    const timeline = sortedLogs.map((log, index) => ({
-      time: log.timestamp,
-      count: 1,
-      intervalSeconds: 1,
-      throughputPerSecond: throughput,
-      errorCount: String(log.level).toUpperCase() === 'ERROR' ? 1 : 0,
-      errorRate: total ? (errors / total) * 100 : 0,
-      avgResponseTime: Number(log.responseTime || 0) || avgResponseTime
-    }));
-
-    return {
-      totalLogs: total,
-      errorCount: errors,
-      errorRate: total ? (errors / total) * 100 : 0,
-      avgResponseTime,
-      p95Latency,
-      bucketInterval: '1s',
-      throughputOverTime: timeline,
-      levelDistribution: Array.from(levelCount.entries()).map(([level, count]) => ({ level, count }))
-    };
-  }, [metrics, sortedLogs]);
 
   return (
     <section className="dashboard-grid">
       <SidebarFilters filters={filters} services={serviceOptions} onChange={setFilters} />
       <section className="dashboard-main">
-        <MetricsCards metrics={computedMetricsFromLogs} />
-        <MetricsCharts metrics={computedMetricsFromLogs} />
+        {/* Metrics and charts use API-sourced data scoped to service + timeRange only */}
+        <MetricsCards metrics={metrics} />
+        <MetricsCharts metrics={metrics} />
+        {/* Log table reacts to all filters including level and search */}
         <LogsTable logs={sortedLogs as LogEvent[]} loading={loading} error={error} searchTerm={filters.search} />
       </section>
     </section>

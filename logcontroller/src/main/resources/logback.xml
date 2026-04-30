@@ -19,13 +19,7 @@
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
             <pattern>
-                {
-                "timestamp":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}",
-                "level":"%level",
-                "message":"%msg",
-                "service":"log-controller-service",
-                "environment":"production"
-                }
+                "timestamp":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}", "level":"%level", "message":"%msg", "service":"log-controller-service", "environment":"production" \n
             </pattern>
         </encoder>
     </appender>
