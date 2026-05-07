@@ -2,6 +2,8 @@ import axios, { AxiosError, type AxiosRequestConfig } from 'axios';
 import type {
   AgentQueryRequest,
   AgentQueryResponse,
+  AlertItem,
+  AlertsResponse,
   AuthUser,
   LogEvent,
   LogFilters,
@@ -388,6 +390,28 @@ export const apiService = {
     const response = await api.post<AgentQueryResponse>('/agent/query', payload);
     console.log('[apiService.queryAgent] Response:', { status: response.status, data: response.data });
     return response.data;
+  },
+
+  async fetchAlerts(): Promise<AlertItem[]> {
+    try {
+      const response = await api.get<AlertsResponse>('/alerts');
+      const grouped = response.data;
+      if (!grouped || typeof grouped !== 'object') return [];
+      // Flatten the grouped-by-service map into a single sorted list
+      return Object.values(grouped)
+        .flat()
+        .sort((a, b) => {
+          // CRITICAL first, then WARNING, then by timestamp descending
+          if (a.severity !== b.severity) {
+            return a.severity === 'CRITICAL' ? -1 : 1;
+          }
+          const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+          const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+          return tb - ta;
+        });
+    } catch {
+      return [];
+    }
   }
 };
 

@@ -9,9 +9,6 @@
         </rollingPolicy>
 
         <encoder class="net.logstash.logback.encoder.LogstashEncoder">
-            <fieldNames>
-                <timestamp>timestamp</timestamp>
-            </fieldNames>
             <customFields>{"service":"log-controller-service","environment":"production"}</customFields>
         </encoder>
     </appender>
@@ -19,7 +16,7 @@
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
             <pattern>
-                "timestamp":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}", "level":"%level", "message":"%msg", "service":"log-controller-service", "environment":"production" \n
+                "level":"%level", "message":"%msg", "service":"log-controller-service", "environment":"production" \n
             </pattern>
         </encoder>
     </appender>

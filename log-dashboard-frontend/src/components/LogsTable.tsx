@@ -85,10 +85,14 @@ export default function LogsTable({ logs, loading, error, searchTerm }: Props) {
           <tbody>
             {logs.map((log, index) => (
               <tr
-                key={log.id || `${log.timestamp}-${index}`}
+                key={log.id || `${log["@timestamp"] ?? index}-${index}`}
                 className={Number(log.responseTime || 0) > 1000 ? 'slow-log' : ''}
               >
-                <td>{new Date(log.timestamp).toLocaleString()}</td>
+                <td>
+                  {log["@timestamp"]
+                    ? new Date(log["@timestamp"]).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })
+                    : "N/A"}
+                </td>
                 <td>{log.service}</td>
                 <td><span className={`tag ${levelClass(String(log.level))}`}>{log.level}</span></td>
                 <td><div className="message-cell">{highlightText(log.message, searchTerm)}</div></td>

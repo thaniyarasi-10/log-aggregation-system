@@ -15,12 +15,17 @@ public class LogConsumer {
     @Autowired
     private LogProcessingService service;
 
-    @KafkaListener(topics = "app-logs", groupId = "log-group")
+    @KafkaListener(
+            topics = "app-logs",
+            groupId = "${spring.kafka.consumer.group-id:log-group-v2}",
+            containerFactory = "kafkaListenerContainerFactory"
+    )
     public void consume(String message) {
+        LOGGER.debug("Kafka message received (length={})", message == null ? 0 : message.length());
         try {
             service.processKafkaRecord(message);
         } catch (RuntimeException ex) {
-            LOGGER.warn("Skipping Kafka log due to processing error: {}", ex);
+            LOGGER.error("Unhandled error processing Kafka record: {}", ex.getMessage(), ex);
         }
     }
 }

@@ -54,13 +54,21 @@ public class LogProcessingService {
         }
 
         LogEvent event = parser.parse(rawLog);
-        if (event == null || !isServiceApproved(event)) {
+        if (event == null) {
+            LOGGER.warn("Kafka record produced null event after parsing — skipping. Raw (truncated): {}",
+                    rawLog.length() > 200 ? rawLog.substring(0, 200) + "…" : rawLog);
             return;
         }
 
-        LOGGER.debug("Kafka log parsed. Persisting to MongoDB for service={}", event.getService());
+        if (!isServiceApproved(event)) {
+            LOGGER.debug("Kafka record dropped — service '{}' is not registered/active in DB. " +
+                    "Register the service via the admin panel to allow ingestion.", event.getService());
+            return;
+        }
+
+        LOGGER.debug("Kafka log approved. service='{}' timestamp='{}' — persisting to MongoDB + ES",
+                event.getService(), event.getTimestamp());
         mongoLogPersistenceService.save(event);
-        LOGGER.debug("MongoDB save call completed for service={}", event.getService());
         repository.save(event);
         messagingTemplate.convertAndSend("/topic/logs", event);
     }
@@ -99,18 +107,19 @@ public class LogProcessingService {
 
     private boolean isServiceApproved(LogEvent event) {
         if (event == null || event.getService() == null || event.getService().isBlank()) {
+            //LOGGER.warn("SERVICE CHECK: null or blank service");
             return false;
         }
 
         String normalizedServiceName = normalizeServiceName(event.getService());
-        if (normalizedServiceName.isBlank()) {
-            return false;
-        }
+//        LOGGER.info("SERVICE CHECK: original='{}' normalized='{}'",
+//                event.getService(), normalizedServiceName); // ADD THIS
 
         boolean isApproved = appServiceRepository.existsByNameAndIsActiveTrue(normalizedServiceName);
-        if (!isApproved) {
-            return false;
-        }
+//        LOGGER.info("SERVICE CHECK: DB lookup for '{}' → approved={}",
+//                normalizedServiceName, isApproved); // ADD THIS
+
+        if (!isApproved) return false;
 
         event.setService(normalizedServiceName);
         return true;

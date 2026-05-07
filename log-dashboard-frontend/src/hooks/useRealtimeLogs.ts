@@ -59,8 +59,9 @@ export function useRealtimeLogs(filters: LogFilters, enabled = true, intervalMs 
 
     const normalize = (value: string) => value.toLowerCase().trim();
 
-    const withinTimeRange = (timestamp: string) => {
+    const withinTimeRange = (timestamp: string | undefined) => {
       const rangeMs = RANGE_TO_MS[filtersRef.current.timeRange] ?? RANGE_TO_MS['15m'];
+      if (!timestamp) return true;
       const eventTs = new Date(timestamp).getTime();
       if (!Number.isFinite(eventTs)) {
         return true;
@@ -79,11 +80,11 @@ export function useRealtimeLogs(filters: LogFilters, enabled = true, intervalMs 
       if (currentFilters.search && !normalize(event.message || '').includes(normalize(currentFilters.search))) {
         return false;
       }
-      return withinTimeRange(event.timestamp);
+      return withinTimeRange(event["@timestamp"]);
     };
 
     const eventKey = (event: LogEvent) => {
-      return `${event.timestamp}|${event.service}|${event.level}|${event.traceId || ''}|${event.message}`;
+      return `${event["@timestamp"] ?? ''}|${event.service}|${event.level}|${event.traceId || ''}|${event.message}`;
     };
 
     const connectRealtime = () => {

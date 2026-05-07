@@ -1,5 +1,7 @@
 from pathlib import Path
 import logging
+import re
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -7,7 +9,7 @@ from fastapi.responses import FileResponse
 from models import AgentQueryRequest, AskRequest, HealthResponse
 from role_agent import answer_query, ask_ai, generate_summary
 from db import fetch_logs
-from role_agent import generate_pdf_report
+from summary import generate_pdf_report
 from typing import Any
 
 app = FastAPI(title="AI Log Analysis Agent")
@@ -16,6 +18,52 @@ REPORT_DIR = Path(__file__).resolve().parent / "generated_reports"
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+# ── Time range parser (mirrors ai.py logic) ──────────────────────────────────
+
+def _parse_time_range(text: str) -> dict[str, Any]:
+    """
+    Parse a natural-language time expression and return UTC-aware start/end datetimes.
+
+    All arithmetic is done in UTC so that comparisons against MongoDB's UTC-stored
+    timestamps are exact — no IST offset shift.  The frontend is responsible for
+    displaying times in IST; this layer must stay UTC-only.
+
+    Falls back to last 24 hours when no pattern is matched.
+    """
+    lower = (text or "").lower()
+    # Always anchor to UTC — never use a local or IST timezone here
+    now = datetime.now(timezone.utc)
+
+    match = re.search(r"last\s+(\d+)\s+(minute|hour|day|week)s?", lower)
+    if match:
+        value = int(match.group(1))
+        unit = match.group(2)
+        if unit == "minute":
+            delta = timedelta(minutes=value)
+        elif unit == "hour":
+            delta = timedelta(hours=value)
+        elif unit == "week":
+            delta = timedelta(weeks=value)
+        else:
+            delta = timedelta(days=value)
+        return {"start": now - delta, "end": now, "label": f"Last {value} {unit}(s)"}
+
+    # "today" — midnight UTC to now
+    if "today" in lower:
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return {"start": start, "end": now, "label": "Today"}
+
+    # "this week" — Monday 00:00 UTC to now
+    if "this week" in lower:
+        start = (now - timedelta(days=now.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        return {"start": start, "end": now, "label": "This week"}
+
+    # Default: last 24 hours
+    return {"start": now - timedelta(hours=24), "end": now, "label": "Last 24 hours"}
 
 
 def _normalize_role(role: str | None) -> str:
@@ -80,13 +128,41 @@ def agent_query(payload: AgentQueryRequest):
     if role == "developer" and not services:
         raise HTTPException(status_code=400, detail="developer requests require assigned services")
 
+    # Parse time range from the query text
+    time_range = _parse_time_range(query)
+    start_dt = time_range["start"]
+    end_dt = time_range["end"]
+    time_label = time_range["label"]
+
     try:
-        # Fetch logs for the role
-        logs = fetch_logs(role, services)
-        logger.info(f"Fetched {len(logs) if logs else 0} logs for role={role}")
-        
+        # Fetch logs scoped by role, services, AND time range
+        logs = fetch_logs(role, services, start=start_dt, end=end_dt)
+        raw_count = len(logs) if logs else 0
+
+        logger.info(
+            "SUMMARY QUERY | role=%s | time=%s | UTC range: %s → %s | raw_count=%d",
+            role, time_label,
+            start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            end_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            raw_count,
+        )
+
+        if raw_count > 0:
+            # Log first and last timestamps to verify the window is correct
+            timestamps = [
+                log.get("timestamp") for log in logs
+                if log.get("timestamp")
+            ]
+            if timestamps:
+                logger.info(
+                    "SUMMARY QUERY | first_ts=%s | last_ts=%s",
+                    timestamps[0], timestamps[-1],
+                )
+
         if not logs:
-            return _success_response(answer="No data available for your role")
+            if payload.mode == "summary":
+                return _error_response(message=f"No logs found for {time_label}.")
+            return _success_response(answer=f"No data available for {time_label}.")
 
         # Process based on mode
         if payload.mode == "qa":
@@ -107,18 +183,26 @@ def agent_query(payload: AgentQueryRequest):
                 if not summary or not isinstance(summary, dict):
                     logger.error("Summary generation returned invalid result")
                     return _error_response(message="Unable to generate summary")
-                
+
+                # Inject time metadata so the PDF header shows the correct range.
+                # summary.py reads: time_range_label, date, timeLabel, timeStart, timeEnd
+                summary["time_range_label"] = time_label
+                summary["date"]             = end_dt.isoformat()
+                summary["timeLabel"]        = time_label
+                summary["timeStart"]        = start_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                summary["timeEnd"]          = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
                 pdf_path = generate_pdf_report(summary, role)
                 if not pdf_path:
                     logger.error("PDF generation returned empty path")
                     return _error_response(message="Failed to generate PDF")
-                
+
                 pdf_file = Path(pdf_path)
                 if not pdf_file.exists():
                     logger.error(f"PDF file does not exist at path: {pdf_path}")
                     return _error_response(message="PDF generation failed")
-                
-                pdf_name = Path(pdf_path).name
+
+                pdf_name = pdf_file.name
                 logger.info(f"Summary mode: PDF generated at {pdf_name}")
                 return _success_response(pdf_url=f"/api/agent/reports/{pdf_name}")
             except Exception as e:
@@ -134,14 +218,6 @@ def agent_query(payload: AgentQueryRequest):
         logger.error(f"Unexpected error in agent_query: {str(e)}", exc_info=True)
         return _error_response(message="Unable to process request")
 
-
-@app.get("/health", response_model=HealthResponse)
-def health() -> HealthResponse:
-    try:
-        return HealthResponse(status="ok")
-    except Exception as e:
-        logger.error(f"Health check error: {str(e)}")
-        return HealthResponse(status="error")
 
 
 @app.post("/ask")

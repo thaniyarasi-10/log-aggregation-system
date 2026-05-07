@@ -1,12 +1,14 @@
 package com.kovanlabs.logcontroller.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 @Document(collection = "logs")
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class LogEvent {
 
+    @JsonProperty("@timestamp")
     private String timestamp;
     private String level;
     private String service;

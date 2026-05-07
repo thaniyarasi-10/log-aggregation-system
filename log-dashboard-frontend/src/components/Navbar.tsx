@@ -1,33 +1,207 @@
+import { useEffect, useRef, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
+import { apiService } from '../services/api';
+import type { AlertItem } from '../types';
 
 const getClassName = ({ isActive }: { isActive: boolean }) =>
   isActive ? 'header-nav-link active' : 'header-nav-link';
 
+// ── Moon icon (light mode → click to go dark)
+function MoonIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+    </svg>
+  );
+}
+
+// ── Sun icon (dark mode → click to go light)
+function SunIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="5" />
+      <line x1="12" y1="1" x2="12" y2="3" />
+      <line x1="12" y1="21" x2="12" y2="23" />
+      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+      <line x1="1" y1="12" x2="3" y2="12" />
+      <line x1="21" y1="12" x2="23" y2="12" />
+      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+    </svg>
+  );
+}
+
+// ── Bell icon SVG
+function BellIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+    </svg>
+  );
+}
+
+// ── Person icon SVG
+function PersonIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+  );
+}
+
 export default function Navbar() {
-  const { user, canAccessUsers, canAccessServices, logout } = useAuth();
+  const { user, role, canAccessUsers, canAccessServices, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
 
-  return (
-    <header className="glass-panel dashboard-header">
-      <div className="header-logo">
-        <span className="logo-icon">◷</span>
-        <h1 className="header-title">LogFlow Observability</h1>
-      </div>
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [alerts, setAlerts] = useState<AlertItem[]>([]);
+  const [alertsLoading, setAlertsLoading] = useState(false);
 
-      <div className="header-actions">
-        <nav className="header-nav">
-          <NavLink to="/logs" className={getClassName}>Logs</NavLink>
-          {canAccessUsers && <NavLink to="/users" className={getClassName}>Users</NavLink>}
-          {canAccessServices && <NavLink to="/services" className={getClassName}>Services</NavLink>}
-        </nav>
-        <button className="btn" onClick={toggleTheme} aria-label="Toggle theme" title="Toggle theme">
-          {theme === 'dark' ? '☀' : '☾'}
+  const profileRef = useRef<HTMLDivElement>(null);
+  const notifRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdowns when clicking outside
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (profileRef.current && !profileRef.current.contains(e.target as Node)) {
+        setProfileOpen(false);
+      }
+      if (notifRef.current && !notifRef.current.contains(e.target as Node)) {
+        setNotifOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Fetch alerts when notification panel opens
+  useEffect(() => {
+    if (!notifOpen) return;
+    let active = true;
+    setAlertsLoading(true);
+    apiService.fetchAlerts()
+      .then((data) => { if (active) setAlerts(data); })
+      .catch(() => { if (active) setAlerts([]); })
+      .finally(() => { if (active) setAlertsLoading(false); });
+    return () => { active = false; };
+  }, [notifOpen]);
+
+  const displayName = user?.name || user?.email || 'User';
+  const displayRole = role || 'User';
+
+  return (
+    <>
+      <header className="glass-panel dashboard-header">
+        <div className="header-logo">
+          <span className="logo-icon">◷</span>
+          <h1 className="header-title">LogFlow Observability</h1>
+        </div>
+
+        <div className="header-actions">
+          <nav className="header-nav">
+            <NavLink to="/logs" className={getClassName}>Logs</NavLink>
+            {canAccessUsers && <NavLink to="/users" className={getClassName}>Users</NavLink>}
+            {canAccessServices && <NavLink to="/services" className={getClassName}>Services</NavLink>}
+          </nav>
+
+          {/* Theme toggle — SVG moon/sun */}
+          <button
+            className="btn header-icon-btn"
+            onClick={toggleTheme}
+            aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            title={theme === 'dark' ? 'Light mode' : 'Dark mode'}
+          >
+            {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
+          </button>
+
+          {/* Notification bell — red dot indicator, no count number */}
+          <div className="header-dropdown-wrap" ref={notifRef}>
+            <button
+              className={`btn header-icon-btn ${notifOpen ? 'active' : ''}`}
+              onClick={() => { setNotifOpen((o) => !o); setProfileOpen(false); }}
+              aria-label="Notifications"
+              title="Alerts"
+            >
+              <BellIcon />
+              {alerts.length > 0 && !notifOpen && (
+                <span className="header-notif-dot" aria-hidden="true" />
+              )}
+            </button>
+
+            {notifOpen && (
+              <div className="header-dropdown header-notif-panel">
+                <div className="header-dropdown-title">Alerts</div>
+                {alertsLoading && (
+                  <div className="header-dropdown-empty">Loading...</div>
+                )}
+                {!alertsLoading && alerts.length === 0 && (
+                  <div className="header-dropdown-empty">No alerts</div>
+                )}
+                {!alertsLoading && alerts.length > 0 && (
+                  <div className="header-notif-list">
+                    {alerts.map((alert, i) => (
+                      <div
+                        key={`${alert.service}-${alert.timestamp ?? i}`}
+                        className={`header-notif-row ${alert.severity === 'CRITICAL' ? 'notif-critical' : 'notif-warning'}`}
+                      >
+                        <div className="header-notif-top">
+                          <span className="header-notif-service">{alert.service}</span>
+                          <span className={`tag ${alert.severity === 'CRITICAL' ? 'tag-error' : 'tag-warn'}`}>
+                            {alert.severity}
+                          </span>
+                        </div>
+                        <div className="header-notif-message">{alert.message}</div>
+                        {alert.timestamp && (
+                          <div className="header-notif-time">
+                            {new Date(alert.timestamp).toLocaleString()}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </header>
+
+      {/* Profile button — fixed bottom-left, outside the header flow */}
+      <div className="profile-anchor" ref={profileRef}>
+        <button
+          className={`profile-trigger ${profileOpen ? 'active' : ''}`}
+          onClick={() => { setProfileOpen((o) => !o); setNotifOpen(false); }}
+          aria-label="Profile"
+          title="Profile"
+        >
+          <PersonIcon />
         </button>
-        <div className="header-user">{user?.name || user?.email || 'User'}</div>
-        <button className="btn" onClick={() => void logout()}>Logout</button>
+
+        {profileOpen && (
+          <div className="profile-dropdown">
+            <div className="header-profile-info">
+              <div className="header-profile-name">{displayName}</div>
+              {user?.email && user.email !== displayName && (
+                <div className="header-profile-email">{user.email}</div>
+              )}
+              <div className="header-profile-role">{displayRole}</div>
+            </div>
+            <div className="header-dropdown-divider" />
+            <button
+              className="header-profile-logout"
+              onClick={() => { setProfileOpen(false); void logout(); }}
+            >
+              Sign out
+            </button>
+          </div>
+        )}
       </div>
-    </header>
+    </>
   );
 }

@@ -2,7 +2,7 @@ export type LogLevel = 'ERROR' | 'WARN' | 'INFO' | 'DEBUG' | string;
 
 export interface LogEvent {
   id?: string;
-  timestamp: string;
+  "@timestamp"?: string;
   level: LogLevel;
   service: string;
   instance?: string;
@@ -122,3 +122,15 @@ export interface AgentQueryResponse {
   pdf_url?: string;
   message?: string;
 }
+
+/** A single alert item as returned by the backend /alerts endpoint */
+export interface AlertItem {
+  service: string;
+  message: string;
+  count: number;
+  severity: string;
+  timestamp: string | null;
+}
+
+/** Raw response shape from GET /api/alerts — keyed by service name */
+export type AlertsResponse = Record<string, AlertItem[]>;

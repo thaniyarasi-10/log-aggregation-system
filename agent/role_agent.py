@@ -1,29 +1,36 @@
 from __future__ import annotations
 
+# ─────────────────────────────────────────────────────────────────────────────
+# role_agent.py  —  ANALYTICS / DATA LAYER
+#
+# Responsibilities:
+#   • Normalise raw MongoDB log records into a consistent shape
+#   • Compute summary statistics (counts, service breakdown, timeline)
+#   • Answer natural-language queries directly from log data
+#   • Build the analytics dict that is handed to the PDF presentation layer
+#
+# This module does NOT render PDFs.  All PDF generation is delegated to
+# summary.py (the presentation layer) via generate_pdf_report().
+# ─────────────────────────────────────────────────────────────────────────────
+
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from tempfile import mkstemp
 from typing import Any
-import os
+import logging
 import re
 
-import matplotlib
-
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-from reportlab.lib import colors
-from reportlab.lib.colors import HexColor
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.lib.units import inch
-from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-
 from db import fetch_logs
+
+# summary.py is the single source of truth for PDF rendering.
+from summary import generate_pdf_report  # noqa: F401 — re-exported for callers
 
 REPORT_DIR = Path(__file__).resolve().parent / 'generated_reports'
 REPORT_DIR.mkdir(parents=True, exist_ok=True)
 MAX_ANALYSIS_LOGS = 1000
 ERROR_LEVELS = {'ERROR', 'WARN', 'WARNING'}
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_timestamp(value: Any) -> datetime | None:
@@ -47,11 +54,14 @@ def _normalize_timestamp(value: Any) -> datetime | None:
 
 def _normalize_logs(logs: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
+    skipped_no_ts = 0
+
     for item in logs or []:
         if not isinstance(item, dict):
             continue
         timestamp = _normalize_timestamp(item.get('timestamp'))
         if timestamp is None:
+            skipped_no_ts += 1
             continue
         service = str(item.get('service') or 'Unknown Service').strip() or 'Unknown Service'
         level = str(item.get('level') or 'INFO').strip().upper() or 'INFO'
@@ -77,6 +87,13 @@ def _normalize_logs(logs: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
                 'errorCode': item.get('errorCode'),
                 'errorDetails': item.get('errorDetails'),
             }
+        )
+
+    if skipped_no_ts:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "_normalize_logs: skipped %d log(s) with missing/unparseable timestamp",
+            skipped_no_ts,
         )
 
     normalized.sort(key=lambda row: row['timestamp'])
@@ -115,87 +132,188 @@ def _limit_logs_for_analysis(logs: list[dict[str, Any]]) -> list[dict[str, Any]]
     return aggregates + latest
 
 
-def _build_summary_context(logs: list[dict[str, Any]] | None) -> dict[str, Any]:
-    normalized = _limit_logs_for_analysis(_normalize_logs(logs))
+def generate_summary(logs: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """
+    Analytics layer: build a structured summary dict from raw log records.
+
+    The returned dict uses the key schema expected by summary.py's
+    generate_pdf_report() so the presentation layer can render it directly
+    without any further transformation.
+
+    Keys produced
+    -------------
+    totalLogs, errorCount (→ total_errors), warningCount (→ total_warnings),
+    infoCount (→ total_info), services, top_errors, unstable_services,
+    timeline, insights, recommendations, generatedAt,
+    total_errors, total_warnings, total_logs, total_info,
+    affected_services, time_range_label, environment
+    """
     generated_at = datetime.now(timezone.utc).isoformat()
 
+    _empty: dict[str, Any] = {
+        # camelCase keys (used by main.py / API layer)
+        'totalLogs': 0,
+        'errorCount': 0,
+        'warningCount': 0,
+        'infoCount': 0,
+        # snake_case keys (used by summary.py PDF layer)
+        'total_logs': 0,
+        'total_errors': 0,
+        'total_warnings': 0,
+        'total_info': 0,
+        'affected_services': 0,
+        'services': [],
+        'top_errors': [],
+        'unstable_services': [],
+        'timeline': [],
+        'insights': ['No data available for your role'],
+        'recommendations': ['No data available for your role'],
+        'time_range_label': 'N/A',
+        'environment': 'Production',
+        'generatedAt': generated_at,
+    }
+
+    if not logs or not isinstance(logs, list):
+        return _empty
+
+    normalized = _limit_logs_for_analysis(_normalize_logs(logs))
     if not normalized:
-        return {
-            'totalLogs': 0,
-            'errorCount': 0,
-            'warningCount': 0,
-            'infoCount': 0,
-            'services': [],
-            'timeline': [],
-            'insights': ['No data available for your role'],
-            'recommendations': ['No data available for your role'],
-            'generatedAt': generated_at,
-        }
+        return _empty
 
-    total_logs = len(normalized)
-    error_count = sum(1 for row in normalized if row['level'] == 'ERROR')
-    warning_count = sum(1 for row in normalized if row['level'] in {'WARN', 'WARNING'})
-    info_count = sum(1 for row in normalized if row['level'] == 'INFO')
+    # ── Aggregate counts ──────────────────────────────────────────────────────
+    total_logs    = len(normalized)
+    error_count   = sum(1 for r in normalized if r['level'] == 'ERROR')
+    warning_count = sum(1 for r in normalized if r['level'] in {'WARN', 'WARNING'})
+    info_count    = sum(1 for r in normalized if r['level'] == 'INFO')
 
-    service_errors: dict[str, int] = defaultdict(int)
-    service_totals: dict[str, int] = defaultdict(int)
-    timeline_counts: dict[str, int] = defaultdict(int)
-    message_counter: Counter[str] = Counter()
+    service_errors:  dict[str, int]      = defaultdict(int)
+    service_warnings: dict[str, int]     = defaultdict(int)
+    service_totals:  dict[str, int]      = defaultdict(int)
+    service_rt:      dict[str, list[float]] = defaultdict(list)
+    timeline_counts: dict[str, int]      = defaultdict(int)
+    message_counter: Counter[str]        = Counter()
+    message_service: dict[str, str]      = {}   # top error → service name
 
-    span_hours = max(1, int((normalized[-1]['timestamp'] - normalized[0]['timestamp']).total_seconds() / 3600))
+    span_hours = max(1, int(
+        (normalized[-1]['timestamp'] - normalized[0]['timestamp']).total_seconds() / 3600
+    ))
     bucket_format = '%Y-%m-%d %H:00' if span_hours <= 48 else '%Y-%m-%d'
 
     for row in normalized:
-        service = str(row['service'])
-        service_totals[service] += 1
+        svc = str(row['service'])
+        service_totals[svc] += 1
+        if row['responseTime']:
+            service_rt[svc].append(row['responseTime'])
         if row['level'] == 'ERROR':
-            service_errors[service] += 1
+            service_errors[svc] += 1
             message_counter[row['message']] += 1
+            message_service.setdefault(row['message'], svc)
             bucket = row['timestamp'].astimezone(timezone.utc).strftime(bucket_format)
             timeline_counts[bucket] += 1
+        elif row['level'] in {'WARN', 'WARNING'}:
+            service_warnings[svc] += 1
 
-    services = [
-        {'name': service, 'errors': count, 'total': service_totals[service]}
-        for service, count in sorted(service_errors.items(), key=lambda row: row[1], reverse=True)
+    # ── Services list (for PDF service table) ─────────────────────────────────
+    all_services = sorted(service_totals.keys(),
+                          key=lambda s: service_errors.get(s, 0), reverse=True)
+
+    def _p99(rt_list: list[float]) -> str:
+        if not rt_list:
+            return '—'
+        s = sorted(rt_list)
+        idx = max(0, int(len(s) * 0.99) - 1)
+        return str(round(s[idx]))
+
+    services_list = [
+        {
+            'name':               svc,
+            'errors':             service_errors.get(svc, 0),
+            'warnings':           service_warnings.get(svc, 0),
+            'total':              service_totals[svc],
+            # admin-specific columns (0 when not available from MongoDB)
+            'requests_approved':  0,
+            'requests_rejected':  0,
+            'users_added':        0,
+            # dev-specific columns
+            'requests_total':     0,
+            'p99_latency_ms':     _p99(service_rt.get(svc, [])),
+        }
+        for svc in all_services
     ]
-    if not services:
-        services = [
-            {'name': service, 'errors': 0, 'total': total}
-            for service, total in sorted(service_totals.items(), key=lambda row: row[1], reverse=True)
-        ]
 
+    # ── Top errors (for PDF top-errors table) ─────────────────────────────────
+    top_errors_list = [
+        {
+            'name':    msg,
+            'error':   msg,
+            'count':   cnt,
+            'service': message_service.get(msg, ''),
+        }
+        for msg, cnt in message_counter.most_common(10)
+    ]
+
+    # ── Unstable services (services with errors, for charts) ──────────────────
+    unstable_services_list = [
+        {'service': svc, 'count': cnt}
+        for svc, cnt in sorted(service_errors.items(), key=lambda x: x[1], reverse=True)
+        if cnt > 0
+    ]
+
+    # ── Timeline ──────────────────────────────────────────────────────────────
     timeline = [
         {'time': bucket, 'errors': count}
-        for bucket, count in sorted(timeline_counts.items(), key=lambda row: row[0])
+        for bucket, count in sorted(timeline_counts.items())
     ]
 
-    top_error_message, top_error_count = message_counter.most_common(1)[0] if message_counter else ('No recurring error found', 0)
-    peak_service = services[0]['name'] if services else 'Unknown Service'
+    # ── Insights (plain text, shown in PDF insights section) ──────────────────
+    top_err_msg, top_err_cnt = (
+        message_counter.most_common(1)[0] if message_counter
+        else ('No recurring error found', 0)
+    )
+    peak_service = services_list[0]['name'] if services_list else 'Unknown Service'
 
     insights = [
         f'Total scoped logs: {total_logs}.',
-        f'Top recurring error: {top_error_message} ({top_error_count} occurrences).' if top_error_count else 'No recurring error pattern was detected.',
+        (f'Top recurring error: "{top_err_msg}" ({top_err_cnt} occurrences).'
+         if top_err_cnt else 'No recurring error pattern was detected.'),
         f'Most impacted service: {peak_service}.',
     ]
 
-    recommendations = [
-        f'Inspect recent {peak_service} deploys, dependencies, and retries if its error count keeps rising.',
-        'Correlate the top error message with infrastructure changes and upstream service failures.',
+    # ── Recommendations (plain text, also used by PDF recommendations section) ─
+    recommendations: list[str] = [
+        f'Inspect recent {peak_service} deploys, dependencies, and retries '
+        'if its error count keeps rising.',
+        'Correlate the top error message with infrastructure changes and '
+        'upstream service failures.',
     ]
-
     if warning_count > error_count and warning_count > 0:
-        recommendations.append('Warnings outnumber errors, so inspect deprecation and saturation signals early.')
+        recommendations.append(
+            'Warnings outnumber errors — inspect deprecation and saturation signals early.'
+        )
+
+    affected = len([s for s in services_list if s['errors'] > 0])
 
     return {
-        'totalLogs': total_logs,
-        'errorCount': error_count,
+        # ── camelCase keys (API / main.py layer) ──────────────────────────────
+        'totalLogs':    total_logs,
+        'errorCount':   error_count,
         'warningCount': warning_count,
-        'infoCount': info_count,
-        'services': services,
-        'timeline': timeline,
-        'insights': insights,
-        'recommendations': recommendations[:6],
-        'generatedAt': generated_at,
+        'infoCount':    info_count,
+        # ── snake_case keys (summary.py PDF layer) ────────────────────────────
+        'total_logs':      total_logs,
+        'total_errors':    error_count,
+        'total_warnings':  warning_count,
+        'total_info':      info_count,
+        'affected_services': affected,
+        'services':           services_list,
+        'top_errors':         top_errors_list,
+        'unstable_services':  unstable_services_list,
+        'timeline':           timeline,
+        'insights':           insights,
+        'recommendations':    recommendations[:6],
+        'time_range_label':   'N/A',   # overwritten by main.py after this call
+        'environment':        'Production',
+        'generatedAt':        generated_at,
     }
 
 
@@ -204,7 +322,7 @@ def answer_query(query: str, logs: list[dict[str, Any]] | None) -> str:
     Answer a natural-language question directly from log data.
     Computes factual answers from the logs rather than returning a generic summary.
     """
-    summary = _build_summary_context(logs)
+    summary = generate_summary(logs)
     if not summary or summary['totalLogs'] <= 0:
         return 'No data available for your role'
 
@@ -384,218 +502,19 @@ def answer_query(query: str, logs: list[dict[str, Any]] | None) -> str:
     )
 
 
-
-def generate_summary(logs: list[dict[str, Any]] | None) -> dict[str, Any]:
-    # Safety check for inputs
-    if not logs or (isinstance(logs, list) and len(logs) == 0):
-        return {
-            'totalLogs': 0,
-            'errorCount': 0,
-            'warningCount': 0,
-            'infoCount': 0,
-            'services': [],
-            'timeline': [],
-            'insights': ['No data available for your role'],
-            'recommendations': ['No data available for your role'],
-            'generatedAt': datetime.now(timezone.utc).isoformat(),
-        }
-    
-    if not isinstance(logs, list):
-        return {
-            'totalLogs': 0,
-            'errorCount': 0,
-            'warningCount': 0,
-            'infoCount': 0,
-            'services': [],
-            'timeline': [],
-            'insights': ['Invalid log data format'],
-            'recommendations': ['No data available for your role'],
-            'generatedAt': datetime.now(timezone.utc).isoformat(),
-        }
-    
-    return _build_summary_context(logs)
+def _save_chart(fig, prefix: str) -> str:
+    # ── REMOVED ──────────────────────────────────────────────────────────────
+    # Chart generation has moved to summary.py (presentation layer).
+    # This stub is kept only so any stale external callers don't crash.
+    raise NotImplementedError("Chart generation is handled by summary.py")
 
 
-
-def _save_chart(fig: plt.Figure, prefix: str) -> str:
-    fd, path = mkstemp(prefix=prefix, suffix='.png', dir=str(REPORT_DIR))
-    os.close(fd)
-    fig.savefig(path, dpi=140, bbox_inches='tight')
-    plt.close(fig)
-    return path
+def _create_service_bar_chart(data):
+    raise NotImplementedError("Chart generation is handled by summary.py")
 
 
-def _create_service_bar_chart(data: dict[str, Any]) -> str | None:
-    services = data.get('services', [])
-    if not isinstance(services, list) or not services:
-        return None
-
-    labels: list[str] = []
-    counts: list[int] = []
-    for item in services[:8]:
-        if isinstance(item, dict):
-            labels.append(str(item.get('name') or 'Unknown Service'))
-            counts.append(int(item.get('errors', 0) or 0))
-
-    if not labels:
-        return None
-
-    fig, ax = plt.subplots(figsize=(7.2, 4.1), dpi=140)
-    ax.bar(labels, counts, color='#4EA5F5')
-    ax.set_title('Errors by Service', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Error Count', fontsize=10)
-    ax.tick_params(axis='x', rotation=25, labelsize=8)
-    ax.tick_params(axis='y', labelsize=8)
-    fig.tight_layout()
-    return _save_chart(fig, 'service-errors-')
-
-
-def _create_timeline_line_chart(data: dict[str, Any]) -> str | None:
-    timeline = data.get('timeline', [])
-    if not isinstance(timeline, list) or not timeline:
-        return None
-
-    labels: list[str] = []
-    values: list[int] = []
-    for item in timeline[:30]:
-        if isinstance(item, dict):
-            labels.append(str(item.get('time') or 'Unknown'))
-            values.append(int(item.get('errors', 0) or 0))
-
-    if not labels:
-        return None
-
-    fig, ax = plt.subplots(figsize=(7.2, 4.1), dpi=140)
-    ax.plot(range(len(values)), values, color='#10B981', linewidth=2.2, marker='o', markersize=3.5)
-    ax.fill_between(range(len(values)), values, color='#10B981', alpha=0.14)
-    ax.set_title('Error Timeline', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Error Count', fontsize=10)
-    ax.set_xlabel('Time Bucket', fontsize=10)
-    step = max(1, len(labels) // 8)
-    tick_positions = list(range(0, len(labels), step))
-    ax.set_xticks(tick_positions)
-    ax.set_xticklabels([labels[index] for index in tick_positions], rotation=25, ha='right', fontsize=8)
-    ax.tick_params(axis='y', labelsize=8)
-    fig.tight_layout()
-    return _save_chart(fig, 'timeline-errors-')
-
-
-def generate_pdf_report(data: dict[str, Any], role: str) -> str:
-    if not isinstance(data, dict):
-        return 'Invalid data provided for PDF generation.'
-
-    if not isinstance(role, str) or not role.strip():
-        role = 'developer'
-
-    pdf_path = REPORT_DIR / f"role-based-log-summary-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}.pdf"
-    doc = SimpleDocTemplate(str(pdf_path), topMargin=0.55 * inch, bottomMargin=0.55 * inch)
-    styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(
-        name='SectionTitle',
-        parent=styles['Heading2'],
-        fontSize=12,
-        textColor=HexColor('#4EA5F5'),
-        spaceAfter=6,
-        spaceBefore=6,
-        fontName='Helvetica-Bold',
-    ))
-    styles.add(ParagraphStyle(
-        name='SectionContent',
-        parent=styles['Normal'],
-        fontSize=9,
-        spaceAfter=4,
-        leading=11,
-    ))
-
-    elements: list[Any] = []
-    total_logs = int(data.get('totalLogs', 0) or 0)
-    error_count = int(data.get('errorCount', 0) or 0)
-    warning_count = int(data.get('warningCount', 0) or 0)
-    info_count = int(data.get('infoCount', 0) or 0)
-    generated_at = str(data.get('generatedAt') or datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC'))
-    role_label = str(role or 'developer').strip().title()
-
-    elements.append(Paragraph('Role-based Log Summary', styles['Title']))
-    elements.append(Spacer(1, 6))
-    elements.append(Paragraph(f'<b>Role:</b> {role_label}', styles['SectionContent']))
-    elements.append(Paragraph(f'<b>Generated:</b> {generated_at}', styles['SectionContent']))
-    elements.append(Spacer(1, 10))
-
-    elements.append(Paragraph('Metrics', styles['SectionTitle']))
-    metrics_table_data = [
-        [Paragraph('<b>Metric</b>', styles['SectionContent']), Paragraph('<b>Value</b>', styles['SectionContent'])],
-        [Paragraph('Total Logs', styles['SectionContent']), Paragraph(str(total_logs), styles['SectionContent'])],
-        [Paragraph('Errors', styles['SectionContent']), Paragraph(str(error_count), styles['SectionContent'])],
-        [Paragraph('Warnings', styles['SectionContent']), Paragraph(str(warning_count), styles['SectionContent'])],
-        [Paragraph('Info', styles['SectionContent']), Paragraph(str(info_count), styles['SectionContent'])],
-    ]
-    metrics_table = Table(metrics_table_data, colWidths=[2.4 * inch, 1.7 * inch])
-    metrics_table.setStyle(TableStyle([
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
-    ]))
-    elements.append(metrics_table)
-    elements.append(Spacer(1, 12))
-
-    elements.append(Paragraph('Insights', styles['SectionTitle']))
-    for insight in data.get('insights', []) if isinstance(data.get('insights', []), list) else []:
-        elements.append(Paragraph(f'• {insight}', styles['SectionContent']))
-    elements.append(Spacer(1, 12))
-
-    elements.append(Paragraph('Service Breakdown', styles['SectionTitle']))
-    service_rows = [[Paragraph('<b>Service</b>', styles['SectionContent']), Paragraph('<b>Errors</b>', styles['SectionContent'])]]
-    for item in data.get('services', []) if isinstance(data.get('services', []), list) else []:
-        if isinstance(item, dict):
-            service_rows.append([
-                Paragraph(str(item.get('name') or 'Unknown Service'), styles['SectionContent']),
-                Paragraph(str(int(item.get('errors', 0) or 0)), styles['SectionContent']),
-            ])
-    service_table = Table(service_rows, colWidths=[3.6 * inch, 1.0 * inch])
-    service_table.setStyle(TableStyle([
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
-    ]))
-    elements.append(service_table)
-    elements.append(Spacer(1, 12))
-
-    service_chart = _create_service_bar_chart(data)
-    if service_chart and os.path.exists(service_chart):
-        elements.append(PageBreak())
-        elements.append(Paragraph('Errors by Service', styles['SectionTitle']))
-        elements.append(Spacer(1, 8))
-        elements.append(Image(service_chart, width=6.6 * inch, height=3.7 * inch))
-
-    timeline_chart = _create_timeline_line_chart(data)
-    if timeline_chart and os.path.exists(timeline_chart):
-        elements.append(PageBreak())
-        elements.append(Paragraph('Error Timeline', styles['SectionTitle']))
-        elements.append(Spacer(1, 8))
-        elements.append(Image(timeline_chart, width=6.6 * inch, height=3.7 * inch))
-
-    elements.append(PageBreak())
-    elements.append(Paragraph('Recommendations', styles['SectionTitle']))
-    recommendations = data.get('recommendations', [])
-    if isinstance(recommendations, list) and recommendations:
-        for recommendation in recommendations:
-            elements.append(Paragraph(f'• {recommendation}', styles['SectionContent']))
-    else:
-        elements.append(Paragraph('• Continue monitoring the scoped services for sustained error growth.', styles['SectionContent']))
-
-    try:
-        doc.build(elements)
-    finally:
-        for image_path in [service_chart, timeline_chart]:
-            if image_path and os.path.exists(image_path):
-                try:
-                    os.remove(image_path)
-                except OSError:
-                    pass
-
-    return str(pdf_path)
+def _create_timeline_line_chart(data):
+    raise NotImplementedError("Chart generation is handled by summary.py")
 
 
 def ask_ai(question: str, services: list[str], role: str | None = None, logs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -609,6 +528,7 @@ def ask_ai(question: str, services: list[str], role: str | None = None, logs: li
     text = str(question or '').strip().lower()
     if any(keyword in text for keyword in ['report', 'summary', 'download']):
         summary = generate_summary(logs)
+        # generate_pdf_report is imported from summary.py (presentation layer)
         pdf_path = generate_pdf_report(summary, role or 'developer')
         return {'type': 'file', 'file': pdf_path}
 

@@ -14,8 +14,10 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import co.elastic.clients.elasticsearch._types.Refresh;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Repository;
 
 import com.kovanlabs.logcontroller.auth.AuthenticatedUserContext;
@@ -85,26 +87,59 @@ public class ElasticRepository {
 
     // SAVE
     public void save(LogEvent log) {
-                long now = System.currentTimeMillis();
-                if (now < writesMutedUntilMs) {
-                        return;
-                }
+        long now = System.currentTimeMillis();
+        if (now < writesMutedUntilMs) return;
 
         try {
-            String index = "app-logs-" + LocalDate.now();
+            String index = "app-logs-" + resolveIndexDate(log.getTimestamp());
             IndexRequest<LogEvent> request = IndexRequest.of(i -> i
                     .index(index)
                     .document(log)
+                    .refresh(Refresh.True)
             );
             client.index(request);
 
-                        if (writesMutedUntilMs != 0L) {
-                                writesMutedUntilMs = 0L;
-                                LOGGER.info("Elasticsearch connection restored. Resuming log persistence.");
-                        }
+            if (writesMutedUntilMs != 0L) {
+                writesMutedUntilMs = 0L;
+                LOGGER.info("Elasticsearch connection restored. Resuming log persistence.");
+            }
         } catch (Exception e) {
-                        writesMutedUntilMs = now + WRITE_BACKOFF_MS;
-                        logErrorThrottled("write", e);
+            writesMutedUntilMs = now + WRITE_BACKOFF_MS;
+            LOGGER.error("FULL ES SAVE ERROR", e);
+        }
+    }
+
+    /**
+     * Derives the UTC date string (yyyy-MM-dd) to use as the index suffix.
+     *
+     * <p>The event's own {@code @timestamp} is the source of truth so that replayed
+     * or late-arriving Kafka messages land in the correct historical index rather than
+     * today's index. Falls back to the current UTC date only when the timestamp is
+     * absent or cannot be parsed as an ISO-8601 instant.
+     *
+     * @param rawTimestamp the value of {@code @timestamp} from the incoming log event
+     * @return a UTC date string, e.g. {@code "2026-05-06"}
+     */
+    private String resolveIndexDate(String rawTimestamp) {
+        if (rawTimestamp != null && !rawTimestamp.isBlank()) {
+            try {
+                return Instant.parse(rawTimestamp)
+                        .atZone(java.time.ZoneOffset.UTC)
+                        .toLocalDate()
+                        .toString();
+            } catch (java.time.format.DateTimeParseException e) {
+                LOGGER.warn("Unparseable @timestamp '{}' — falling back to current UTC date for index naming", rawTimestamp);
+            }
+        }
+        // Fallback: use current UTC date (covers events with no timestamp set)
+        return LocalDate.now(java.time.ZoneOffset.UTC).toString();
+    }
+    @Scheduled(fixedDelay = 35_000) // runs every 35s, slightly longer than backoff window
+    public void resetWriteMuteIfExpired() {
+        long now = System.currentTimeMillis();
+        if (writesMutedUntilMs != 0L && now >= writesMutedUntilMs) {
+            writesMutedUntilMs = 0L;
+            LOGGER.info("Write mute period expired — ES writes re-enabled.");
         }
     }
 
@@ -165,7 +200,7 @@ public class ElasticRepository {
 				.size(Math.min(size, 500))
 				.sort(sort -> sort
 						.field(f -> f
-								.field("timestamp")
+								.field("@timestamp")
 										.order(SortOrder.Desc)))
 		);
 
@@ -298,7 +333,7 @@ public class ElasticRepository {
                 .query(boolQuery._toQuery())
                 .size(0)
                 .aggregations(AGG_TOTAL_COUNT, a -> a
-                        .valueCount(v -> v.field("timestamp")))
+                        .valueCount(v -> v.field("@timestamp")))
                 .aggregations(AGG_ERROR_COUNT, a -> a
                         .filter(f -> f
                                 .term(t -> t
@@ -316,7 +351,7 @@ public class ElasticRepository {
                                 .size(10)))
                 .aggregations(AGG_THROUGHPUT_OVER_TIME, a -> a
                         .dateHistogram(dh -> dh
-                                .field("timestamp")
+                                .field("@timestamp")
                                 .fixedInterval(Time.of(t -> t.time(interval)))
                                 .minDocCount(0)
                                 .extendedBounds(eb -> eb
@@ -361,10 +396,9 @@ public class ElasticRepository {
         final String metricToStr = bounds.getToInstant().truncatedTo(ChronoUnit.SECONDS).toString();
         filters.add(
                 RangeQuery.of(r -> r
-                        .field("timestamp")
+                        .field("@timestamp")
                         .gte(JsonData.of(metricFromStr))
-                        .lte(JsonData.of(metricToStr))
-                        .timeZone("Asia/Kolkata"))._toQuery()
+                        .lte(JsonData.of(metricToStr)))._toQuery()
         );
 
         return filters;
@@ -689,7 +723,7 @@ public class ElasticRepository {
                 )._toQuery();
         }
 
-    // In rangeQuery() method, add timezone to the range query
+    // In rangeQuery() method, timestamps are always UTC ISO-8601 — no timezone conversion needed
     private Query rangeQuery(TimeBounds bounds) {
         Instant from = bounds.getFromInstant().truncatedTo(ChronoUnit.SECONDS);
         Instant to = bounds.getToInstant()
@@ -697,10 +731,9 @@ public class ElasticRepository {
                 .plusSeconds(2);
 
         return RangeQuery.of(r -> r
-                        .field("timestamp")
+                        .field("@timestamp")
                         .gte(JsonData.of(from.toString()))
-                        .lte(JsonData.of(to.toString()))
-                        .timeZone("Asia/Kolkata"))  // ← ADD THIS
+                        .lte(JsonData.of(to.toString())))
                 ._toQuery();
     }
         private TimeBounds resolveTimeBounds(String requestedFrom, String requestedTo) {
@@ -771,7 +804,7 @@ public class ElasticRepository {
                                                                 .field(LEVEL_KEYWORD)
                                                                 .value("ERROR"))._toQuery(),
                                                 RangeQuery.of(r -> r
-                                                                .field("timestamp")
+                                                                .field("@timestamp")
                                                                 .gte(JsonData.of("now-" + windowExpression))
                                                                 .lte(JsonData.of("now")))._toQuery()
                                 )

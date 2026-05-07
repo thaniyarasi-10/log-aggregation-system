@@ -19,8 +19,15 @@ type Props = {
 };
 
 export default function MetricChart({ title, logs }: Props) {
-  const ordered = [...logs].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-  const labels = ordered.map((item) => new Date(item.timestamp).toLocaleTimeString());
+  const ordered = [...logs].sort(
+    (a, b) =>
+      new Date(a["@timestamp"] ?? 0).getTime() - new Date(b["@timestamp"] ?? 0).getTime()
+  );
+  const labels = ordered.map((item) =>
+    item["@timestamp"]
+      ? new Date(item["@timestamp"]).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })
+      : "N/A"
+  );
   const values = ordered.map((item) => Number(item.responseTime || 0));
 
   return (

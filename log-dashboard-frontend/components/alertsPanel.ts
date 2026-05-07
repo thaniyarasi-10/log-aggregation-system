@@ -32,12 +32,31 @@ export class AlertsPanel {
     }
 
     private async refresh() {
-        const groupedAlerts = await ApiClient.fetchAlerts();
-        const flattened = this.flattenAndSort(groupedAlerts);
+        try {
+            const groupedAlerts = await ApiClient.fetchAlerts();
 
-        this.render(flattened);
-        this.refreshTimeElement.textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
-        this.notifyOnNewAlerts(flattened);
+            // Handle null / undefined / wrong format safely
+            if (!groupedAlerts || typeof groupedAlerts !== "object") {
+                this.render([]);
+                return;
+            }
+
+            const flattened = this.flattenAndSort(groupedAlerts);
+
+            this.render(flattened);
+
+            this.refreshTimeElement.textContent =
+                `Last updated: ${new Date().toLocaleTimeString()}`;
+
+            this.notifyOnNewAlerts(flattened);
+
+        } catch (err) {
+            console.error("Alert fetch failed:", err);
+
+            // Always show fallback UI
+            this.listContainer.innerHTML =
+                '<div class="alerts-empty">No alerts</div>';
+        }
     }
 
     private flattenAndSort(grouped: AlertsGrouped): Alert[] {
@@ -46,12 +65,17 @@ export class AlertsPanel {
     }
 
     private render(alerts: Alert[]) {
-        if (!alerts.length) {
-            this.listContainer.innerHTML = '<div class="alerts-empty">No active alerts</div>';
+        if (!alerts || alerts.length === 0) {
+            this.listContainer.innerHTML = `
+                <div class="alerts-empty">
+                    No alerts
+                </div>
+            `;
             return;
         }
 
         const latestAlerts = alerts.slice(0, 20);
+
         this.listContainer.innerHTML = latestAlerts
             .map(alert => {
                 const sevClass = alert.severity === 'CRITICAL' ? 'critical' : 'warning';

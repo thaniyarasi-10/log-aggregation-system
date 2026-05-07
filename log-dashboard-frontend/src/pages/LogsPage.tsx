@@ -132,7 +132,10 @@ export default function LogsPage() {
 
   // Sort logs for the table — this is purely presentational and does not affect metrics
   const sortedLogs = useMemo(() => {
-    return [...logs].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    return [...logs].sort(
+      (a, b) =>
+        new Date(b["@timestamp"] ?? 0).getTime() - new Date(a["@timestamp"] ?? 0).getTime()
+    );
   }, [logs]);
 
   return (

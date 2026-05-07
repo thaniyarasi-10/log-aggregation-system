@@ -15,13 +15,13 @@ import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 @Configuration
 public class KafkaConsumerConfig {
 
-    @Value("${kafka.bootstrap-servers:172.16.30.10:9092}")
+    @Value("${spring.kafka.bootstrap-servers:${kafka.bootstrap-servers:172.16.30.10:9092}}")
     private String bootstrapServers;
 
-    @Value("${kafka.group-id:log-group}")
+    @Value("${spring.kafka.consumer.group-id:${kafka.group-id:log-group}}")
     private String groupId;
 
-    @Value("${kafka.listener.auto-startup:true}")
+    @Value("${spring.kafka.listener.auto-startup:${kafka.listener.auto-startup:true}}")
     private boolean listenerAutoStartup;
 
     @Bean
@@ -47,4 +47,5 @@ public class KafkaConsumerConfig {
         factory.setAutoStartup(listenerAutoStartup);
         return factory;
     }
+
 }
