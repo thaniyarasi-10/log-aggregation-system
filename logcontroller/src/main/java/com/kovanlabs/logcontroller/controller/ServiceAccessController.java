@@ -31,6 +31,7 @@ import com.kovanlabs.logcontroller.jpa.repository.ServiceAccessRequestRepository
 import com.kovanlabs.logcontroller.jpa.repository.UserServiceMappingRepository;
 import com.kovanlabs.logcontroller.service.OAuthUserEmailResolver;
 import com.kovanlabs.logcontroller.service.ServiceAccessAuthorizationService;
+import com.kovanlabs.logcontroller.service.WebSocketLogBroadcaster;
 
 @RestController
 @RequestMapping("/api/services")
@@ -44,6 +45,7 @@ public class ServiceAccessController {
     private final AppUserRepository appUserRepository;
     private final ServiceAccessRequestRepository serviceAccessRequestRepository;
     private final UserServiceMappingRepository userServiceMappingRepository;
+    private final WebSocketLogBroadcaster webSocketLogBroadcaster;
 
     public ServiceAccessController(
             ServiceAccessAuthorizationService authorizationService,
@@ -51,13 +53,15 @@ public class ServiceAccessController {
             AppServiceRepository appServiceRepository,
             AppUserRepository appUserRepository,
             ServiceAccessRequestRepository serviceAccessRequestRepository,
-            UserServiceMappingRepository userServiceMappingRepository) {
+            UserServiceMappingRepository userServiceMappingRepository,
+            WebSocketLogBroadcaster webSocketLogBroadcaster) {
         this.authorizationService = authorizationService;
         this.emailResolver = emailResolver;
         this.appServiceRepository = appServiceRepository;
         this.appUserRepository = appUserRepository;
         this.serviceAccessRequestRepository = serviceAccessRequestRepository;
         this.userServiceMappingRepository = userServiceMappingRepository;
+        this.webSocketLogBroadcaster = webSocketLogBroadcaster;
     }
 
     @GetMapping
@@ -313,6 +317,11 @@ public class ServiceAccessController {
         serviceRequest.setStatus(ServiceAccessRequest.RequestStatus.APPROVED);
         serviceRequest.setUpdatedAt(LocalDateTime.now());
         serviceAccessRequestRepository.save(serviceRequest);
+
+        // The requester now has a new service mapping — update their WebSocket routing
+        // profile immediately so they start receiving live logs for the approved service.
+        appUserRepository.findById(serviceRequest.getRequestedBy())
+                .ifPresent(requester -> webSocketLogBroadcaster.invalidateCacheForUser(requester.getEmail()));
 
         return ResponseEntity.ok(new ServiceSummaryView(
                 savedService.getId() == null ? null : savedService.getId().toString(),

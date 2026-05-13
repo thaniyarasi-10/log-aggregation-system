@@ -10,9 +10,12 @@ import type { LogEvent, LogFilters, MetricsResponse } from '../types';
 
 const defaultFilters: LogFilters = {
   timeRange: '24h',
+  services: [],
+  levels: [],
+  search: '',
+  // Legacy aliases — kept in sync by SidebarFilters
   service: '',
   level: '',
-  search: ''
 };
 
 const emptyMetrics: MetricsResponse = {
@@ -42,8 +45,8 @@ export default function LogsPage() {
   );
 
   // Metrics only depend on service + timeRange — level and search are intentionally excluded.
-  // This key drives the metrics fetch effect so it only re-runs when the relevant filters change.
-  const metricsKey = `${filters.service}|${filters.timeRange}`;
+  // For multi-select, join services into a single string for the metrics key.
+  const metricsKey = `${filters.services.join(',')}|${filters.timeRange}`;
 
   // Logs react to all filters (service, timeRange, level, search).
   // allowedServices and isAdmin are passed so the hook can enforce the RBAC
@@ -89,12 +92,14 @@ export default function LogsPage() {
   useEffect(() => {
     let active = true;
 
-    // Build a metrics-only filter: strip level and search so they are never sent
+    // Build a metrics-only filter: strip levels and search so they are never sent
     const metricsFilters: LogFilters = {
       timeRange: filters.timeRange,
-      service: filters.service,
+      services: filters.services,
+      levels: [],
+      search: '',
+      service: filters.services.length === 1 ? filters.services[0] : '',
       level: '',
-      search: ''
     };
 
     const refreshMetrics = async () => {

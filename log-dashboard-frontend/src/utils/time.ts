@@ -27,13 +27,18 @@ export function buildLogQueryParams(filters: LogFilters): LogQueryParams {
     size: 500
   };
 
-  // Map filters to backend query parameters
-  if (filters.service && filters.service.trim()) {
-    params.service = filters.service.trim();
+  // Multi-select services: send as comma-separated string when any are selected
+  const selectedServices = (filters.services ?? []).filter(Boolean);
+  if (selectedServices.length > 0) {
+    params.services = selectedServices.join(',');
   }
-  if (filters.level && filters.level.trim()) {
-    params.level = filters.level.trim();
+
+  // Multi-select levels: send as comma-separated string when any are selected
+  const selectedLevels = (filters.levels ?? []).filter(Boolean);
+  if (selectedLevels.length > 0) {
+    params.levels = selectedLevels.join(',');
   }
+
   if (filters.search && filters.search.trim()) {
     params.message = filters.search.trim();
   }

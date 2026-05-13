@@ -133,12 +133,23 @@ export function useRealtimeLogs(
       }
 
       // ── UI filter checks ───────────────────────────────────────────────────
-      if (currentFilters.service && normalize(event.service || '') !== normalize(currentFilters.service)) {
-        return false;
+      // Multi-select: empty array = no filter (show all)
+      const selectedServices = currentFilters.services ?? [];
+      if (selectedServices.length > 0) {
+        const eventService = normalize(event.service || '');
+        if (!selectedServices.some((s) => normalize(s) === eventService)) {
+          return false;
+        }
       }
-      if (currentFilters.level && normalize(String(event.level || '')) !== normalize(currentFilters.level)) {
-        return false;
+
+      const selectedLevels = currentFilters.levels ?? [];
+      if (selectedLevels.length > 0) {
+        const eventLevel = normalize(String(event.level || ''));
+        if (!selectedLevels.some((l) => normalize(l) === eventLevel)) {
+          return false;
+        }
       }
+
       if (currentFilters.search && !normalize(event.message || '').includes(normalize(currentFilters.search))) {
         return false;
       }

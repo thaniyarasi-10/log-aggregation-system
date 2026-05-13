@@ -21,14 +21,25 @@ export interface LogEvent {
 
 export interface LogFilters {
   timeRange: '5m' | '15m' | '1h' | '24h' | '7d' | '15d';
-  service: string;
-  level: string;
+  /** Multi-select: empty array = all services */
+  services: string[];
+  /** Multi-select: empty array = all levels */
+  levels: string[];
   search: string;
+  // Legacy single-value aliases kept for backward compat — derived from arrays
+  /** @deprecated Use `services` array instead */
+  service: string;
+  /** @deprecated Use `levels` array instead */
+  level: string;
 }
 
 export interface LogQueryParams {
+  /** Comma-separated list of services, or omit for all */
+  services?: string;
   service?: string;
   environment?: string;
+  /** Comma-separated list of levels, or omit for all */
+  levels?: string;
   level?: string;
   traceId?: string;
   message?: string;

@@ -95,9 +95,11 @@ public class LogController {
     // search logs
     @GetMapping
     public ResponseEntity<List<LogEvent>> search(
-            @RequestParam(value = "service", required = false) String service,
+            @RequestParam(value = "services", required = false) List<String> services,
+            @RequestParam(value = "service",  required = false) String service,
             @RequestParam(value = "environment", required = false) String environment,
-            @RequestParam(value = "level", required = false) String level,
+            @RequestParam(value = "levels", required = false) List<String> levels,
+            @RequestParam(value = "level",   required = false) String level,
             @RequestParam(value = "traceId", required = false) String traceId,
             @RequestParam(value = "message", required = false) String message,
             @RequestParam(value = "from", required = false) String from,
@@ -108,10 +110,15 @@ public class LogController {
         AuthenticatedUserContext context = accessAuthorizationService.getCurrentUserAccessContext();
         requirePermission(context, PermissionName.LOGS_READ);
         try {
-            List<LogEvent> logs = elasticRepository.search(
-                    service,
+            // Normalise multi-value params: split comma-separated values that the
+            // frontend sends as a single string (e.g. "auth-service,user-service")
+            List<String> resolvedServices = resolveMultiParam(services, service);
+            List<String> resolvedLevels   = resolveMultiParam(levels, level);
+
+            List<LogEvent> logs = elasticRepository.searchMulti(
+                    resolvedServices,
                     environment,
-                    level,
+                    resolvedLevels,
                     traceId,
                     message,
                     from,
@@ -125,6 +132,24 @@ public class LogController {
             LOGGER.warn("Failed to fetch logs, returning empty result: {}", ex.getMessage());
             return ResponseEntity.ok(List.of());
         }
+    }
+
+    private List<String> resolveMultiParam(List<String> multi, String single) {
+        java.util.stream.Stream<String> stream = java.util.stream.Stream.empty();
+
+        if (multi != null && !multi.isEmpty()) {
+            stream = multi.stream()
+                    .filter(v -> v != null && !v.isBlank())
+                    .flatMap(v -> java.util.Arrays.stream(v.split(",")))
+                    .map(String::trim)
+                    .filter(v -> !v.isBlank());
+        } else if (single != null && !single.isBlank()) {
+            stream = java.util.Arrays.stream(single.split(","))
+                    .map(String::trim)
+                    .filter(v -> !v.isBlank());
+        }
+
+        return stream.distinct().toList();
     }
 
     @GetMapping("/services")

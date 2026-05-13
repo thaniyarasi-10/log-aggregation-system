@@ -347,7 +347,153 @@ public class ElasticRepository {
         }
     }
 
-        public List<String> getDistinctServices(String from, String to, int maxServices, AuthenticatedUserContext accessContext) {
+    /**
+     * Multi-select search: accepts lists of services and levels.
+     *
+     * <p>Empty list = no filter (show all). Non-empty list = Elasticsearch
+     * {@code terms} query (OR semantics across the list).
+     *
+     * <p>RBAC is always enforced via {@link #buildAccessFilter}: DEV users can
+     * only see services in their {@code allowedServices} list regardless of what
+     * the {@code services} parameter contains.
+     */
+    public List<LogEvent> searchMulti(
+            List<String> services,
+            String environment,
+            List<String> levels,
+            String traceId,
+            String message,
+            String from,
+            String to,
+            int page,
+            int size,
+            AuthenticatedUserContext accessContext) {
+        try {
+            LOGGER.debug("SEARCH MULTI → services={} levels={} environment={} traceId={} message={}",
+                    services, levels, environment, traceId, message);
+
+            TimeBounds bounds = resolveTimeBounds(from, to);
+            BoolQuery.Builder boolQueryBuilder = QueryBuilders.bool();
+
+            // ── Services filter (terms = OR across selected services) ──────────
+            if (services != null && !services.isEmpty()) {
+                List<FieldValue> serviceValues = services.stream()
+                        .filter(this::hasText)
+                        .map(s -> s.trim().toLowerCase(java.util.Locale.ROOT))
+                        .distinct()
+                        .map(FieldValue::of)
+                        .toList();
+                if (!serviceValues.isEmpty()) {
+                    boolQueryBuilder.must(
+                        QueryBuilders.terms()
+                            .field(SERVICE_FIELD)
+                            .terms(v -> v.value(serviceValues))
+                            .build()._toQuery()
+                    );
+                }
+            }
+
+            // ── Environment filter ─────────────────────────────────────────────
+            if (environment != null && !environment.isBlank()) {
+                boolQueryBuilder.must(
+                    QueryBuilders.term(t -> t
+                        .field(ENVIRONMENT_FIELD)
+                        .value(environment.trim().toLowerCase(java.util.Locale.ROOT))
+                    )
+                );
+            }
+
+            // ── Levels filter (terms = OR across selected levels) ──────────────
+            if (levels != null && !levels.isEmpty()) {
+                List<FieldValue> levelValues = levels.stream()
+                        .filter(this::hasText)
+                        .map(l -> l.trim().toLowerCase(java.util.Locale.ROOT))
+                        .distinct()
+                        .map(FieldValue::of)
+                        .toList();
+                if (!levelValues.isEmpty()) {
+                    boolQueryBuilder.must(
+                        QueryBuilders.terms()
+                            .field(LEVEL_FIELD)
+                            .terms(v -> v.value(levelValues))
+                            .build()._toQuery()
+                    );
+                }
+            }
+
+            // ── TraceId filter ─────────────────────────────────────────────────
+            if (traceId != null && !traceId.isBlank()) {
+                boolQueryBuilder.must(
+                    QueryBuilders.bool(b -> b
+                        .should(s -> s.term(t -> t.field("traceId").value(traceId.trim())))
+                        .should(s -> s.term(t -> t.field("trace_id").value(traceId.trim())))
+                        .minimumShouldMatch("1")
+                    )
+                );
+            }
+
+            // ── Full-text message filter ───────────────────────────────────────
+            if (message != null && !message.isBlank()) {
+                String trimmed = message.trim();
+                boolQueryBuilder.must(
+                    QueryBuilders.bool(inner -> inner
+                        .should(s -> s
+                            .match(m -> m
+                                .field("message")
+                                .query(trimmed)
+                                .operator(co.elastic.clients.elasticsearch._types.query_dsl.Operator.Or)
+                                .minimumShouldMatch("1")
+                            )
+                        )
+                        .should(s -> s
+                            .matchPhrase(mp -> mp
+                                .field("message")
+                                .query(trimmed)
+                                .boost(2.0f)
+                            )
+                        )
+                        .minimumShouldMatch("1")
+                    )
+                );
+            }
+
+            // ── Time range filter ──────────────────────────────────────────────
+            if (from != null || to != null) {
+                boolQueryBuilder.filter(rangeQuery(bounds));
+            }
+
+            // ── RBAC access filter — always enforced ───────────────────────────
+            buildAccessFilter(accessContext).ifPresent(boolQueryBuilder::filter);
+
+            BoolQuery boolQuery = boolQueryBuilder.build();
+
+            SearchRequest request = SearchRequest.of(s -> s
+                    .index(INDEX_PATTERN)
+                    .query(boolQuery._toQuery())
+                    .from(page * size)
+                    .size(Math.min(size, 500))
+                    .sort(sort -> sort
+                            .field(f -> f
+                                    .field("@timestamp")
+                                    .order(SortOrder.Desc)))
+            );
+
+            LOGGER.debug("ES MULTI SEARCH QUERY={}", boolQuery._toQuery());
+
+            SearchResponse<LogEvent> response = client.search(request, LogEvent.class);
+            return response.hits().hits()
+                    .stream()
+                    .map(Hit::source)
+                    .filter(Objects::nonNull)
+                    .toList();
+
+        } catch (Exception e) {
+            logErrorThrottled("searchMulti", e);
+            return new ArrayList<>();
+        }
+    }
+
+    public List<String> getDistinctServices(String from, String to, int maxServices, AuthenticatedUserContext accessContext) {
                 try {
                         boolean hasTimeFilter = hasText(from) || hasText(to);
                         List<Query> filters = new ArrayList<>();

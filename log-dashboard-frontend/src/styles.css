@@ -597,6 +597,233 @@ body {
   color: var(--text-dim);
 }
 
+/* ---- CHECKBOX FILTER COMPONENT ---- */
+
+/* Top row of the sidebar: title + clear button */
+.filters-sidebar-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.filters-clear-btn {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 0;
+  font-family: var(--font-family);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.filters-clear-btn:hover {
+  color: var(--text-primary);
+}
+
+/* Collapsible checkbox filter group */
+.checkbox-filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 10px;
+}
+
+.checkbox-filter-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: transparent;
+  border: none;
+  padding: 0 0 6px 0;
+  cursor: pointer;
+  width: 100%;
+  font-family: var(--font-family);
+  color: var(--text-secondary);
+}
+
+.checkbox-filter-header:hover .checkbox-filter-label {
+  color: var(--text-primary);
+}
+
+.checkbox-filter-label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-align: left;
+}
+
+.checkbox-filter-header-right {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* Selected-count badge */
+.checkbox-filter-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 700;
+  font-family: var(--font-family);
+  line-height: 1;
+}
+
+.checkbox-filter-chevron {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+
+.checkbox-filter-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 4px;
+}
+
+/* Search box inside the filter body */
+.checkbox-filter-search {
+  font-size: 0.75rem;
+  padding: 4px 7px;
+  margin-bottom: 2px;
+}
+
+/* Scrollable list when there are many options */
+.checkbox-filter-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 180px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.checkbox-filter-item {
+  display: flex;
+}
+
+.checkbox-filter-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 3px 4px;
+  border-radius: 3px;
+  width: 100%;
+  transition: background 0.1s;
+}
+
+.checkbox-filter-option:hover {
+  background: var(--btn-hover-bg);
+}
+
+.checkbox-filter-option input[type="checkbox"] {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* Colored dot for log level options */
+.checkbox-filter-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.checkbox-filter-option-text {
+  font-size: 0.78rem;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.checkbox-filter-empty {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  padding: 4px 4px;
+  font-style: italic;
+}
+
+/* ---- ACTIVE FILTER CHIPS ---- */
+.filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px 2px 7px;
+  border-radius: 10px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  font-family: var(--font-family);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filter-chip-service {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border: 1px solid rgba(37, 99, 235, 0.2);
+}
+
+[data-theme="dark"] .filter-chip-service {
+  border-color: rgba(68, 147, 248, 0.25);
+}
+
+.filter-chip-level-error  { background: var(--level-error-bg);  color: var(--level-error);  border: 1px solid rgba(252, 68, 68, 0.2); }
+.filter-chip-level-warn   { background: var(--level-warn-bg);   color: var(--level-warn);   border: 1px solid rgba(245, 165, 36, 0.2); }
+.filter-chip-level-info   { background: var(--level-info-bg);   color: var(--level-info);   border: 1px solid rgba(96, 165, 250, 0.2); }
+.filter-chip-level-debug  { background: var(--level-debug-bg);  color: var(--level-debug);  border: 1px solid rgba(17, 171, 58, 0.2); }
+
+.filter-chip-search {
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  font-style: italic;
+  font-weight: 400;
+}
+
+.filter-chip-remove {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 0;
+  opacity: 0.7;
+  font-family: var(--font-family);
+  flex-shrink: 0;
+}
+
+.filter-chip-remove:hover {
+  opacity: 1;
+}
+
 .form-control {
   background: var(--surface-raised);
   border: 1px solid var(--border);

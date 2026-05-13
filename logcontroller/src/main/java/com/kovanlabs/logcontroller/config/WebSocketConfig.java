@@ -100,16 +100,19 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
             HttpSession session = servletRequest.getServletRequest().getSession(false);
             if (session == null) {
-                LOGGER.warn("WS HANDSHAKE — no HTTP session found; user may not be authenticated");
-                return true;
+                // No HTTP session → no authentication → reject the upgrade.
+                // Returning false sends HTTP 401 and prevents the WebSocket from opening.
+                LOGGER.warn("WS HANDSHAKE REJECTED — no HTTP session; unauthenticated upgrade attempt blocked");
+                response.setStatusCode(org.springframework.http.HttpStatus.UNAUTHORIZED);
+                return false;
             }
 
             // Spring Security stores the Authentication in the session under this key
-            Object securityContext = session.getAttribute(
-                    "SPRING_SECURITY_CONTEXT");
+            Object securityContext = session.getAttribute("SPRING_SECURITY_CONTEXT");
             if (securityContext == null) {
-                LOGGER.warn("WS HANDSHAKE — no security context in session; WebSocket will have no principal");
-                return true;
+                LOGGER.warn("WS HANDSHAKE REJECTED — no security context in session; upgrade blocked");
+                response.setStatusCode(org.springframework.http.HttpStatus.UNAUTHORIZED);
+                return false;
             }
 
             Authentication authentication = null;
@@ -118,15 +121,19 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
             }
 
             if (authentication == null || !authentication.isAuthenticated()) {
-                LOGGER.warn("WS HANDSHAKE — unauthenticated session; WebSocket will have no principal");
-                return true;
+                LOGGER.warn("WS HANDSHAKE REJECTED — unauthenticated principal; upgrade blocked");
+                response.setStatusCode(org.springframework.http.HttpStatus.UNAUTHORIZED);
+                return false;
             }
 
             String email = resolveEmail(authentication);
             if (email == null || email.isBlank()) {
-                LOGGER.warn("WS HANDSHAKE — could not resolve email from principal '{}'; falling back to getName()",
+                // Cannot route WebSocket messages without a stable email identity.
+                // Reject the upgrade rather than silently connecting with no principal.
+                LOGGER.warn("WS HANDSHAKE REJECTED — could not resolve email from principal '{}'; upgrade blocked",
                         authentication.getName());
-                email = authentication.getName();
+                response.setStatusCode(org.springframework.http.HttpStatus.UNAUTHORIZED);
+                return false;
             }
 
             LOGGER.debug("WS HANDSHAKE — resolved principal email='{}' for WebSocket session", email);

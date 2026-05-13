@@ -37,6 +37,7 @@ import com.kovanlabs.logcontroller.jpa.repository.ServiceAccessRequestRepository
 import com.kovanlabs.logcontroller.jpa.repository.UserRoleMappingRepository;
 import com.kovanlabs.logcontroller.jpa.repository.UserServiceMappingRepository;
 import com.kovanlabs.logcontroller.service.ServiceAccessAuthorizationService;
+import com.kovanlabs.logcontroller.service.WebSocketLogBroadcaster;
 
 @RestController
 @RequestMapping("/api/admin")
@@ -51,6 +52,7 @@ public class AdminManagementController {
     private final ServiceAccessRequestRepository serviceAccessRequestRepository;
     private final UserRoleMappingRepository userRoleMappingRepository;
     private final UserServiceMappingRepository userServiceMappingRepository;
+    private final WebSocketLogBroadcaster webSocketLogBroadcaster;
 
     public AdminManagementController(
             ServiceAccessAuthorizationService authorizationService,
@@ -59,7 +61,8 @@ public class AdminManagementController {
             AppServiceRepository appServiceRepository,
             ServiceAccessRequestRepository serviceAccessRequestRepository,
             UserRoleMappingRepository userRoleMappingRepository,
-            UserServiceMappingRepository userServiceMappingRepository) {
+            UserServiceMappingRepository userServiceMappingRepository,
+            WebSocketLogBroadcaster webSocketLogBroadcaster) {
         this.authorizationService = authorizationService;
         this.appUserRepository = appUserRepository;
         this.appRoleRepository = appRoleRepository;
@@ -67,6 +70,7 @@ public class AdminManagementController {
         this.serviceAccessRequestRepository = serviceAccessRequestRepository;
         this.userRoleMappingRepository = userRoleMappingRepository;
         this.userServiceMappingRepository = userServiceMappingRepository;
+        this.webSocketLogBroadcaster = webSocketLogBroadcaster;
     }
 
     @GetMapping("/users")
@@ -130,6 +134,11 @@ public class AdminManagementController {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database temporarily unavailable", ex);
         }
 
+        // Invalidate this user's WebSocket routing profile immediately so the new
+        // role/service mappings take effect on the next broadcast without waiting
+        // for the TTL to expire.
+        webSocketLogBroadcaster.invalidateCacheForUser(user.getEmail());
+
         return ResponseEntity.ok(toAdminUserView(user));
     }
 
@@ -184,6 +193,8 @@ public class AdminManagementController {
             AppUser savedUser = appUserRepository.save(user);
             syncUserRoles(savedUser, resolveRoleNames(request));
             syncUserServices(savedUser, resolveServiceNames(request));
+            // Populate the new user's WebSocket routing profile immediately.
+            webSocketLogBroadcaster.invalidateCacheForUser(savedUser.getEmail());
             return ResponseEntity.status(HttpStatus.CREATED).body(toAdminUserView(savedUser));
         } catch (DataIntegrityViolationException ex) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid user data", ex);
@@ -206,6 +217,10 @@ public class AdminManagementController {
         user.setActive(false);
         user.setUpdatedAt(LocalDateTime.now());
         appUserRepository.save(user);
+
+        // Remove the deactivated user from the WebSocket routing cache immediately
+        // so they stop receiving live logs without waiting for TTL expiry.
+        webSocketLogBroadcaster.invalidateCacheForUser(user.getEmail());
 
         return ResponseEntity.noContent().build();
     }
@@ -328,6 +343,11 @@ public class AdminManagementController {
         service.setUpdatedAt(LocalDateTime.now());
         appServiceRepository.save(service);
 
+        // A deactivated service affects every user mapped to it.
+        // Invalidate the full routing cache so all affected users stop receiving
+        // logs for this service on the next broadcast cycle.
+        webSocketLogBroadcaster.invalidateCache();
+
         return ResponseEntity.noContent().build();
     }
 
@@ -403,6 +423,12 @@ public class AdminManagementController {
         serviceRequest.setUpdatedAt(LocalDateTime.now());
 
         ServiceAccessRequest savedRequest = serviceAccessRequestRepository.save(serviceRequest);
+
+        // The requester now has a new service mapping — update their routing profile
+        // immediately so they start receiving live logs for the approved service.
+        appUserRepository.findById(serviceRequest.getRequestedBy())
+                .ifPresent(requester -> webSocketLogBroadcaster.invalidateCacheForUser(requester.getEmail()));
+
         return ResponseEntity.ok(toServiceRequestView(savedRequest));
     }
 
