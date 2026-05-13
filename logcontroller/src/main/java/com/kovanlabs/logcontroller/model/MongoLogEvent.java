@@ -34,7 +34,7 @@ public class MongoLogEvent {
     private String endpoint;
     private String method;
     private Integer statusCode;
-    private Integer responseTime;
+    private Double responseTime;
 
     private String errorCode;
     private String errorDetails;
@@ -146,11 +146,11 @@ public class MongoLogEvent {
         this.statusCode = statusCode;
     }
 
-    public Integer getResponseTime() {
+    public Double getResponseTime() {
         return responseTime;
     }
 
-    public void setResponseTime(Integer responseTime) {
+    public void setResponseTime(Double responseTime) {
         this.responseTime = responseTime;
     }
 

@@ -14,12 +14,14 @@ import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.core.oidc.user.OidcUser;
 import org.springframework.security.oauth2.core.user.OAuth2User;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 import com.kovanlabs.logcontroller.auth.AuthenticatedUserContext;
 import com.kovanlabs.logcontroller.auth.PermissionName;
@@ -32,6 +34,22 @@ import com.kovanlabs.logcontroller.jpa.repository.RolePermissionMappingRepositor
 import com.kovanlabs.logcontroller.jpa.repository.UserRoleMappingRepository;
 import com.kovanlabs.logcontroller.jpa.repository.UserServiceMappingRepository;
 
+/**
+ * Authoritative RBAC authorization service.
+ *
+ * <h3>Security invariants</h3>
+ * <ul>
+ *   <li>All permissions come exclusively from DB {@code role_permission_mapping} rows.
+ *       There are no implicit, fallback, or default permissions.</li>
+ *   <li>OAuth identity (Azure AD) answers <em>who</em> the user is.
+ *       The DB answers <em>what</em> they are allowed to do.</li>
+ *   <li>Unregistered OAuth users (no DB record) → 403 Forbidden.</li>
+ *   <li>Registered users with no roles → 403 Forbidden.</li>
+ *   <li>DB outage → 503 Service Unavailable (fail-closed, never fail-open).</li>
+ *   <li>Admin email override elevates only users explicitly listed in
+ *       {@code app.auth.admin-emails}; it never grants access to unknown users.</li>
+ * </ul>
+ */
 @Service
 public class ServiceAccessAuthorizationService {
 
@@ -40,11 +58,11 @@ public class ServiceAccessAuthorizationService {
     private static final String PERMISSION_USERS_MANAGE = "users:manage";
     private static final String PERMISSION_SERVICES_MANAGE = "services:manage";
     private static final String PERMISSION_SERVICES_READ = "services:read";
-    private static final List<String> DEFAULT_READ_PERMISSIONS = List.of(
-            "logs:read",
-            "metrics:read",
-            "alerts:read",
-            "services:read");
+
+    // -------------------------------------------------------------------------
+    // No DEFAULT_READ_PERMISSIONS constant — implicit permissions are forbidden.
+    // All permissions must be explicitly stored in role_permission_mapping.
+    // -------------------------------------------------------------------------
 
     private final AppUserRepository appUserRepository;
     private final AppServiceRepository appServiceRepository;
@@ -52,7 +70,6 @@ public class ServiceAccessAuthorizationService {
     private final UserRoleMappingRepository userRoleMappingRepository;
     private final RolePermissionMappingRepository rolePermissionMappingRepository;
     private final OAuthUserEmailResolver emailResolver;
-    private final boolean failOpenWhenDbUnavailable;
     private final Set<String> adminEmails;
     private final long dbRetryCooldownMs;
     private final long contextCacheTtlMs;
@@ -68,7 +85,6 @@ public class ServiceAccessAuthorizationService {
             UserRoleMappingRepository userRoleMappingRepository,
             RolePermissionMappingRepository rolePermissionMappingRepository,
             OAuthUserEmailResolver emailResolver,
-            @Value("${app.auth.fail-open-when-db-unavailable:true}") boolean failOpenWhenDbUnavailable,
             @Value("${app.auth.admin-emails:}") String adminEmailsCsv,
             @Value("${app.auth.db-retry-cooldown-ms:5000}") long dbRetryCooldownMs,
             @Value("${app.auth.context-cache-ttl-ms:2000}") long contextCacheTtlMs) {
@@ -78,23 +94,38 @@ public class ServiceAccessAuthorizationService {
         this.userRoleMappingRepository = userRoleMappingRepository;
         this.rolePermissionMappingRepository = rolePermissionMappingRepository;
         this.emailResolver = emailResolver;
-        this.failOpenWhenDbUnavailable = failOpenWhenDbUnavailable;
         this.adminEmails = parseAdminEmails(adminEmailsCsv);
         this.dbRetryCooldownMs = Math.max(1000L, dbRetryCooldownMs);
         this.contextCacheTtlMs = Math.max(500L, contextCacheTtlMs);
     }
 
+    // =========================================================================
+    // Public API
+    // =========================================================================
+
+    /**
+     * Resolves the RBAC context for the currently authenticated OAuth principal.
+     *
+     * <p>Throws {@link ResponseStatusException}:
+     * <ul>
+     *   <li>401 — no authenticated principal in the security context</li>
+     *   <li>403 — email cannot be resolved, user not in DB, or user has no roles</li>
+     *   <li>503 — DB is temporarily unavailable (fail-closed)</li>
+     * </ul>
+     */
     public AuthenticatedUserContext getCurrentUserAccessContext() {
         return emailResolver.getCurrentUserEmail()
                 .map(this::getUserAccessContext)
                 .orElseGet(() -> {
                     Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
                     if (authentication != null && authentication.isAuthenticated()) {
-                        String fallbackEmail = normalizeEmailForLookup(authentication.getName());
-                        return buildAuthenticatedReadFallbackContext(
-                                fallbackEmail.isBlank() ? "authenticated@local" : fallbackEmail);
+                        String name = authentication.getName();
+                        LOGGER.warn("RBAC DENY — could not resolve email from OAuth principal for name='{}'. " +
+                                "No permissions granted.", name);
+                        throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                                "Unable to resolve user identity from OAuth token");
                     }
-                    return new AuthenticatedUserContext("unknown@local", UserRole.USER, List.of(), List.of());
+                    throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Authentication required");
                 });
     }
 
@@ -106,58 +137,214 @@ public class ServiceAccessAuthorizationService {
         return context != null && (context.isAdmin() || context.hasPermission(PermissionName.SERVICES_MANAGE));
     }
 
+    /**
+     * Returns the list of services accessible to the given email.
+     * Propagates 403/503 from {@link #getUserAccessContext} on authorization failure.
+     */
     public List<AppService> getAccessibleServices(String email) {
         if (email == null || email.isBlank()) {
-            LOGGER.debug("getAccessibleServices email is blank -> returning 0 services");
+            LOGGER.debug("getAccessibleServices — blank email, returning empty list");
             return List.of();
-        }
-
-        try {
-            String normalizedEmail = normalizeEmailForLookup(email);
-            AuthenticatedUserContext context = getUserAccessContext(normalizedEmail);
-            List<AppService> services = resolveServicesFromContext(context);
-            clearCooldownIfNeeded();
-            return services;
-        } catch (RuntimeException ex) {
-            markDbUnavailable(email, "services", ex);
-            return List.of();
-        }
-    }
-
-    public AuthenticatedUserContext getUserAccessContext(String email) {
-        if (email == null || email.isBlank()) {
-            return new AuthenticatedUserContext("unknown@local", UserRole.USER, List.of(), List.of());
         }
 
         String normalizedEmail = normalizeEmailForLookup(email);
-        AuthenticatedUserContext cached = readCachedContext(normalizedEmail);
-        if (cached != null) {
-            return applyAdminEmailOverride(normalizedEmail, cached);
+        AuthenticatedUserContext context = getUserAccessContext(normalizedEmail);
+        List<AppService> services = resolveServicesFromContext(context);
+        clearCooldownIfNeeded();
+        return services;
+    }
+
+    /**
+     * Resolves the full RBAC context for the given email address.
+     *
+     * <p>Authorization decisions:
+     * <ul>
+     *   <li>Blank email → 403</li>
+     *   <li>DB in cooldown → 503 (fail-closed)</li>
+     *   <li>No DB user found → 403 "No roles assigned to user"</li>
+     *   <li>DB user found but no roles → 403 "No roles assigned to user"</li>
+     *   <li>DB error → 503 (fail-closed)</li>
+     * </ul>
+     */
+    public AuthenticatedUserContext getUserAccessContext(String email) {
+        if (email == null || email.isBlank()) {
+            LOGGER.warn("RBAC DENY — getUserAccessContext called with blank email");
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "No roles assigned to user");
         }
 
+        String normalizedEmail = normalizeEmailForLookup(email);
+
+        // Return cached context if still valid.
+        AuthenticatedUserContext cached = readCachedContext(normalizedEmail);
+        if (cached != null) {
+            return safeApplyAdminEmailOverride(normalizedEmail, cached);
+        }
+
+        // DB is in cooldown — fail closed with 503.
         if (isDbInCooldown(email, "access context")) {
-            AuthenticatedUserContext context = readCachedContext(normalizedEmail, true)
-                .orElseGet(() -> buildDbUnavailableFallbackContext(normalizedEmail));
-            context = applyAdminEmailOverride(normalizedEmail, context);
-            writeCachedContext(normalizedEmail, context);
-            return context;
+            LOGGER.warn("RBAC DB OUTAGE — denying access for email='{}' while datasource is unavailable", email);
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "Authorization service temporarily unavailable. Please try again shortly.");
         }
 
         try {
-        AuthenticatedUserContext context = resolveUserByEmailCandidates(normalizedEmail)
-            .map(this::toAuthenticatedContext)
-            .orElseGet(() -> buildFallbackContext(normalizedEmail));
-            context = applyAdminEmailOverride(normalizedEmail, context);
+            AuthenticatedUserContext context = resolveUserByEmailCandidates(normalizedEmail)
+                    .map(this::toAuthenticatedContext)
+                    .orElseGet(() -> denyUnregisteredUser(normalizedEmail));
+            context = safeApplyAdminEmailOverride(normalizedEmail, context);
             writeCachedContext(normalizedEmail, context);
             clearCooldownIfNeeded();
             return context;
+        } catch (ResponseStatusException ex) {
+            // Re-throw 403/401/503 directly — never wrap in a DB-fallback path.
+            throw ex;
         } catch (RuntimeException ex) {
             markDbUnavailable(email, "access context", ex);
-            AuthenticatedUserContext fallback = buildDbUnavailableFallbackContext(normalizedEmail);
-            fallback = applyAdminEmailOverride(normalizedEmail, fallback);
-            writeCachedContext(normalizedEmail, fallback);
-            return fallback;
+            LOGGER.warn("RBAC DB OUTAGE — denying access for email='{}': {}", email, ex.getMessage());
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "Authorization service temporarily unavailable. Please try again shortly.");
         }
+    }
+
+    // =========================================================================
+    // Private — core resolution
+    // =========================================================================
+
+    /**
+     * Builds the RBAC context for a confirmed DB user.
+     *
+     * <p>Throws 403 if the user has no roles assigned.
+     * Logs a warning (but does not throw) if the user has roles but no permissions
+     * in {@code role_permission_mapping} — the caller will receive an empty permission
+     * set and all protected endpoints will return 403 until an admin configures the mapping.
+     */
+    private AuthenticatedUserContext toAuthenticatedContext(AppUser user) {
+        List<String> roleNames;
+        try {
+            roleNames = userRoleMappingRepository.findRoleNamesByUserId(user.getId()).stream()
+                    .filter(Objects::nonNull)
+                    .map(String::trim)
+                    .filter(value -> !value.isBlank())
+                    .distinct()
+                    .toList();
+        } catch (RuntimeException ex) {
+            LOGGER.error("Failed to load roles for userId='{}': {}", user.getId(), ex.getMessage(), ex);
+            throw ex;
+        }
+
+        // Hard deny — a registered user with no roles must not receive any access.
+        if (roleNames.isEmpty()) {
+            LOGGER.warn("RBAC DENY — userId='{}' email='{}' has no roles assigned. " +
+                    "An admin must assign at least one role before this user can access the system.",
+                    user.getId(), user.getEmail());
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "No roles assigned to user");
+        }
+
+        List<String> permissionNames;
+        try {
+            permissionNames = rolePermissionMappingRepository.findPermissionNamesByUserId(user.getId()).stream()
+                    .filter(Objects::nonNull)
+                    .map(String::trim)
+                    .filter(value -> !value.isBlank())
+                    .distinct()
+                    .toList();
+        } catch (RuntimeException ex) {
+            LOGGER.error("Failed to load permissions for userId='{}': {}", user.getId(), ex.getMessage(), ex);
+            throw ex;
+        }
+
+        boolean admin = roleNames.stream()
+                .map(value -> value.toUpperCase(Locale.ROOT))
+                .anyMatch(ADMIN_ROLE::equals)
+                || currentAuthenticationIsAdmin()
+                || hasAdminPermission(permissionNames);
+
+        UserRole role = admin ? UserRole.ADMIN : UserRole.DEV;
+
+        List<String> allowedServices;
+        try {
+            allowedServices = resolveServicesForUser(user.getId(), admin).stream()
+                    .map(AppService::getName)
+                    .filter(Objects::nonNull)
+                    .map(String::trim)
+                    .filter(name -> !name.isBlank())
+                    .distinct()
+                    .toList();
+        } catch (RuntimeException ex) {
+            LOGGER.error("Failed to load services for userId='{}': {}", user.getId(), ex.getMessage(), ex);
+            throw ex;
+        }
+
+        // Permissions come exclusively from DB role_permission_mapping.
+        // No fallback permissions are ever granted.
+        if (permissionNames.isEmpty()) {
+            LOGGER.warn("RBAC WARN — userId='{}' email='{}' roles={} has no permissions in role_permission_mapping. " +
+                    "All protected endpoints will return 403 until permissions are configured by an admin.",
+                    user.getId(), user.getEmail(), roleNames);
+        }
+
+        LOGGER.debug("RBAC OK — email='{}' userId='{}' roles={} services={} permissions={}",
+                user.getEmail(), user.getId(), roleNames, allowedServices.size(), permissionNames.size());
+
+        return new AuthenticatedUserContext(user.getEmail(), role, allowedServices, permissionNames);
+    }
+
+    /**
+     * Called when no DB user record exists for the resolved OAuth email.
+     * Always throws 403 — unregistered users are never granted access.
+     */
+    private AuthenticatedUserContext denyUnregisteredUser(String email) {
+        LOGGER.warn("RBAC DENY — no DB user found for email='{}'. " +
+                "User must be registered and assigned roles by an admin before accessing the system.", email);
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN, "No roles assigned to user");
+    }
+
+    // =========================================================================
+    // Private — admin email override
+    // =========================================================================
+
+    /**
+     * Elevates the context to ADMIN for emails listed in {@code app.auth.admin-emails}.
+     * Only applies to users who already have a valid DB-backed context — it never
+     * creates access for unknown users.
+     */
+    private AuthenticatedUserContext safeApplyAdminEmailOverride(String email, AuthenticatedUserContext context) {
+        try {
+            return applyAdminEmailOverride(email, context);
+        } catch (RuntimeException ex) {
+            LOGGER.warn("Could not apply admin email override for '{}' — using existing context: {}", email, ex.getMessage());
+            return context;
+        }
+    }
+
+    private AuthenticatedUserContext applyAdminEmailOverride(String email, AuthenticatedUserContext context) {
+        if (context == null || !isConfiguredAdminEmail(email)) {
+            return context;
+        }
+
+        List<String> allServiceNames = appServiceRepository.findByIsActiveTrue().stream()
+                .map(AppService::getName)
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(name -> !name.isBlank())
+                .distinct()
+                .toList();
+
+        List<String> adminPermissions = List.of(
+                "logs:read",
+                "logs:write",
+                "metrics:read",
+                "alerts:read",
+                "alerts:write",
+                PERMISSION_SERVICES_READ,
+                PERMISSION_SERVICES_MANAGE,
+                PERMISSION_USERS_MANAGE);
+
+        return new AuthenticatedUserContext(
+                context.email(),
+                UserRole.ADMIN,
+                allServiceNames,
+                adminPermissions);
     }
 
     private Set<String> parseAdminEmails(String rawCsv) {
@@ -174,40 +361,17 @@ public class ServiceAccessAuthorizationService {
         return email != null && !email.isBlank() && adminEmails.contains(normalizeEmailForLookup(email));
     }
 
-    private AuthenticatedUserContext applyAdminEmailOverride(String email, AuthenticatedUserContext context) {
-        if (context == null || !isConfiguredAdminEmail(email)) {
-            return context;
-        }
-
-        // Fetch all active services from DB so the ES access filter always has concrete names.
-        // Never use the wildcard sentinel "*" — buildAccessFilter treats that as no-access.
-        List<String> allServiceNames = appServiceRepository.findByIsActiveTrue().stream()
-                .map(AppService::getName)
-                .filter(Objects::nonNull)
-                .map(String::trim)
-                .filter(name -> !name.isBlank())
-                .distinct()
-                .toList();
-
-        List<String> elevatedPermissions = fallbackPermissions(List.of("ADMIN"), true, allServiceNames);
-        return new AuthenticatedUserContext(
-                context.email(),
-                UserRole.ADMIN,
-                allServiceNames,
-                elevatedPermissions);
-    }
+    // =========================================================================
+    // Private — DB cooldown / retry
+    // =========================================================================
 
     private boolean isDbInCooldown(String email, String operation) {
         long retryAt = retryAfterEpochMs.get();
         long now = System.currentTimeMillis();
         if (retryAt > now) {
             if (cooldownLogPrinted.compareAndSet(false, true)) {
-                long remainingMs = retryAt - now;
-                LOGGER.warn(
-                        "Skipping DB lookup for {} while datasource is unavailable (email='{}', retryInMs={})",
-                        operation,
-                        email,
-                        remainingMs);
+                LOGGER.warn("Skipping DB lookup for {} while datasource is unavailable (email='{}', retryInMs={})",
+                        operation, email, retryAt - now);
             }
             return true;
         }
@@ -218,12 +382,8 @@ public class ServiceAccessAuthorizationService {
         long retryAt = System.currentTimeMillis() + dbRetryCooldownMs;
         retryAfterEpochMs.set(retryAt);
         cooldownLogPrinted.set(false);
-        LOGGER.warn(
-                "DB unavailable while resolving {} for '{}': {}. Next retry in {} ms",
-                operation,
-                email,
-                ex.getMessage(),
-                dbRetryCooldownMs);
+        LOGGER.warn("DB unavailable while resolving {} for '{}': {}. Next retry in {} ms",
+                operation, email, ex.getMessage(), dbRetryCooldownMs);
     }
 
     private void clearCooldownIfNeeded() {
@@ -234,166 +394,68 @@ public class ServiceAccessAuthorizationService {
         }
     }
 
+    // =========================================================================
+    // Private — service resolution
+    // =========================================================================
+
     private List<AppService> resolveServicesForUser(String userId, boolean admin) {
         if (admin) {
             return appServiceRepository.findByIsActiveTrue().stream()
                     .filter(Objects::nonNull)
                     .toList();
         }
-
         return userServiceMappingRepository.findServicesByUserId(userId).stream()
                 .filter(Objects::nonNull)
                 .toList();
     }
 
-    private AuthenticatedUserContext toAuthenticatedContext(AppUser user) {
-        List<String> roleNames = userRoleMappingRepository.findRoleNamesByUserId(user.getId()).stream()
+    private List<AppService> resolveServicesFromContext(AuthenticatedUserContext context) {
+        if (context == null) {
+            return List.of();
+        }
+        if (context.isAdmin()) {
+            return appServiceRepository.findByIsActiveTrue();
+        }
+        List<String> allowed = context.allowedServices();
+        if (allowed == null || allowed.isEmpty()) {
+            return List.of();
+        }
+        Set<String> normalized = allowed.stream()
                 .filter(Objects::nonNull)
-                .map(String::trim)
-                .filter(value -> !value.isBlank())
-                .distinct()
+                .map(value -> value.trim().toLowerCase(Locale.ROOT))
+                .collect(Collectors.toSet());
+
+        // Wildcard sentinel is never used — treat it as no-access.
+        if (normalized.contains("*")) {
+            LOGGER.warn("RBAC WARN — wildcard '*' found in allowedServices for context email='{}'. " +
+                    "Wildcard is not permitted; returning empty service list.", context.email());
+            return List.of();
+        }
+
+        return appServiceRepository.findByIsActiveTrue().stream()
+                .filter(service -> service.getName() != null
+                        && normalized.contains(service.getName().trim().toLowerCase(Locale.ROOT)))
                 .toList();
-
-        List<String> permissionNames = rolePermissionMappingRepository.findPermissionNamesByUserId(user.getId()).stream()
-                .filter(Objects::nonNull)
-                .map(String::trim)
-                .filter(value -> !value.isBlank())
-                .distinct()
-            .toList();
-
-        boolean admin = roleNames.stream()
-            .map(value -> value.toUpperCase(Locale.ROOT))
-            .anyMatch(ADMIN_ROLE::equals)
-            || currentAuthenticationIsAdmin()
-            || hasAdminPermission(permissionNames);
-
-        UserRole role = admin ? UserRole.ADMIN : UserRole.USER;
-
-        List<String> allowedServices = resolveServicesForUser(user.getId(), admin).stream()
-                .map(AppService::getName)
-                .filter(Objects::nonNull)
-                .map(String::trim)
-                .filter(name -> !name.isBlank())
-                .distinct()
-                .toList();
-
-        if (permissionNames.isEmpty()) {
-            permissionNames = fallbackPermissions(roleNames, admin, allowedServices);
-        }
-
-        if (allowedServices.isEmpty() && !admin) {
-            allowedServices = extractAllowedServicesFromAuthentication();
-        }
-
-        LOGGER.debug(
-                "getUserAccessContext email='{}' userId='{}' roleNames='{}' allowedServicesCount={} permissionsCount={}",
-                user.getEmail(),
-                user.getId(),
-                roleNames,
-                allowedServices.size(),
-                permissionNames.size());
-
-        return new AuthenticatedUserContext(user.getEmail(), role, allowedServices, permissionNames);
     }
 
-    private AuthenticatedUserContext buildFallbackContext(String email) {
-        boolean admin = currentAuthenticationIsAdmin();
-        List<String> allowedServices = admin
-                ? appServiceRepository.findByIsActiveTrue().stream()
-                        .map(AppService::getName)
-                        .filter(Objects::nonNull)
-                        .map(String::trim)
-                        .filter(value -> !value.isBlank())
-                        .distinct()
-                        .toList()
-                : extractAllowedServicesFromAuthentication();
-
-        if (!admin && allowedServices.isEmpty() && failOpenWhenDbUnavailable) {
-            // Non-admin with no mapped services: return empty list rather than wildcard.
-            // buildAccessFilter treats wildcard as no-access, so this is equivalent but explicit.
-            allowedServices = List.of();
-        }
-
-        List<String> permissions = fallbackPermissions(List.of(), admin, allowedServices);
-        if (!admin && permissions.isEmpty() && failOpenWhenDbUnavailable) {
-            permissions = DEFAULT_READ_PERMISSIONS;
-        }
-        return new AuthenticatedUserContext(email, admin ? UserRole.ADMIN : UserRole.USER, allowedServices, permissions);
-    }
-
-    private AuthenticatedUserContext buildDbUnavailableFallbackContext(String email) {
-        boolean admin = currentAuthenticationIsAdmin();
-        List<String> allowedServices;
-
-        if (admin) {
-            // Even during a DB outage, try to fetch service names so the ES filter has
-            // concrete values. If this also fails, return an empty list — it is safer to
-            // show no data than to return unfiltered results.
-            try {
-                allowedServices = appServiceRepository.findByIsActiveTrue().stream()
-                        .map(AppService::getName)
-                        .filter(Objects::nonNull)
-                        .map(String::trim)
-                        .filter(name -> !name.isBlank())
-                        .distinct()
-                        .toList();
-            } catch (RuntimeException ex) {
-                LOGGER.warn("Could not load service list during DB-unavailable fallback for admin '{}': {}", email, ex.getMessage());
-                allowedServices = List.of();
-            }
-        } else {
-            allowedServices = extractAllowedServicesFromAuthentication();
-            // For non-admin, wildcard is intentionally NOT used here — it would be treated
-            // as no-access by buildAccessFilter, which is the correct secure default.
-        }
-
-        List<String> permissions;
-        if (admin) {
-            permissions = fallbackPermissions(List.of(), true, allowedServices);
-        } else if (failOpenWhenDbUnavailable) {
-            permissions = DEFAULT_READ_PERMISSIONS;
-        } else {
-            permissions = List.of();
-        }
-
-        return new AuthenticatedUserContext(email, admin ? UserRole.ADMIN : UserRole.USER, allowedServices, permissions);
-    }
-
-    private AuthenticatedUserContext buildAuthenticatedReadFallbackContext(String email) {
-        boolean admin = currentAuthenticationIsAdmin();
-        // Fetch real service names from DB — never use wildcard, which buildAccessFilter
-        // now treats as no-access to prevent privilege escalation.
-        List<String> allowedServices;
-        if (admin) {
-            try {
-                allowedServices = appServiceRepository.findByIsActiveTrue().stream()
-                        .map(AppService::getName)
-                        .filter(Objects::nonNull)
-                        .map(String::trim)
-                        .filter(name -> !name.isBlank())
-                        .distinct()
-                        .toList();
-            } catch (RuntimeException ex) {
-                LOGGER.warn("Could not load service list for authenticated read fallback for '{}': {}", email, ex.getMessage());
-                allowedServices = List.of();
-            }
-        } else {
-            allowedServices = extractAllowedServicesFromAuthentication();
-        }
-        List<String> permissions = admin
-                ? fallbackPermissions(List.of(), true, allowedServices)
-                : DEFAULT_READ_PERMISSIONS;
-        return new AuthenticatedUserContext(email, admin ? UserRole.ADMIN : UserRole.USER, allowedServices, permissions);
-    }
+    // =========================================================================
+    // Private — email resolution helpers
+    // =========================================================================
 
     private java.util.Optional<AppUser> resolveUserByEmailCandidates(String rawEmail) {
         List<String> candidates = candidateEmails(rawEmail);
         for (String candidate : candidates) {
             java.util.Optional<AppUser> user = appUserRepository.findByEmailIgnoreCaseAndIsActiveTrue(candidate);
             if (user.isPresent()) {
+                if (!candidate.equals(rawEmail)) {
+                    LOGGER.info("RBAC resolved email '{}' to existing user id='{}' via candidate '{}'",
+                            rawEmail, user.get().getId(), candidate);
+                }
                 return user;
             }
         }
+        LOGGER.warn("RBAC could not resolve any DB user for email='{}' (tried {} candidate(s))",
+                rawEmail, candidates.size());
         return java.util.Optional.empty();
     }
 
@@ -406,6 +468,7 @@ public class ServiceAccessAuthorizationService {
         java.util.LinkedHashSet<String> candidates = new java.util.LinkedHashSet<>();
         candidates.add(normalized);
 
+        // Azure AD external-user suffix: "user_domain.com#EXT#@tenant.onmicrosoft.com"
         int extMarker = normalized.indexOf("#ext#");
         if (extMarker > 0) {
             String externalPrefix = normalized.substring(0, extMarker);
@@ -415,6 +478,7 @@ public class ServiceAccessAuthorizationService {
             }
         }
 
+        // Pipe-delimited OID: "oid|email"
         int pipeMarker = normalized.indexOf('|');
         if (pipeMarker > 0 && pipeMarker < normalized.length() - 1) {
             String tail = normalized.substring(pipeMarker + 1).trim();
@@ -430,36 +494,15 @@ public class ServiceAccessAuthorizationService {
         return email == null ? "" : email.trim().toLowerCase(Locale.ROOT);
     }
 
-    private List<AppService> resolveServicesFromContext(AuthenticatedUserContext context) {
-        if (context == null) {
-            return List.of();
-        }
+    // =========================================================================
+    // Private — authentication introspection helpers
+    // =========================================================================
 
-        // ADMIN always gets ALL active services — no filtering
-        if (context.isAdmin()) {
-            return appServiceRepository.findByIsActiveTrue();
-        }
-
-        List<String> allowed = context.allowedServices();
-        if (allowed == null || allowed.isEmpty()) {
-            return List.of();
-        }
-
-        Set<String> normalized = allowed.stream()
-                .filter(Objects::nonNull)
-                .map(value -> value.trim().toLowerCase(Locale.ROOT))
-                .collect(Collectors.toSet());
-
-        if (normalized.contains("*")) {
-            return appServiceRepository.findByIsActiveTrue();
-        }
-
-        return appServiceRepository.findByIsActiveTrue().stream()
-                .filter(service -> service.getName() != null
-                        && normalized.contains(service.getName().trim().toLowerCase(Locale.ROOT)))
-                .toList();
-    }
-
+    /**
+     * Checks whether the current Spring Security authentication carries an ADMIN
+     * authority or ADMIN-valued claim. Used only as a secondary signal inside
+     * {@link #toAuthenticatedContext} — the DB role is always the primary source.
+     */
     private boolean currentAuthenticationIsAdmin() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         if (authentication == null || !authentication.isAuthenticated()) {
@@ -486,82 +529,10 @@ public class ServiceAccessAuthorizationService {
         return false;
     }
 
-    private List<String> extractAllowedServicesFromAuthentication() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()) {
-            return List.of();
-        }
-
-        Object principal = authentication.getPrincipal();
-        Object raw = null;
-        if (principal instanceof OidcUser oidcUser) {
-            raw = oidcUser.getAttribute("allowed_services");
-        } else if (principal instanceof OAuth2User oauth2User) {
-            raw = oauth2User.getAttribute("allowed_services");
-        }
-
-        if (raw instanceof Iterable<?> iterable) {
-            return toDistinctStringList(iterable);
-        }
-
-        return List.of();
-    }
-
-    private List<String> fallbackPermissions(List<String> roleNames, boolean admin, List<String> allowedServices) {
-        if (admin) {
-            return List.of(
-                    "logs:read",
-                    "logs:write",
-                    "metrics:read",
-                    "alerts:read",
-                    "alerts:write",
-                    PERMISSION_SERVICES_READ,
-                    PERMISSION_SERVICES_MANAGE,
-                    PERMISSION_USERS_MANAGE);
-        }
-
-        Set<String> normalizedRoles = roleNames.stream()
-                .filter(Objects::nonNull)
-                .map(value -> value.trim().toUpperCase(Locale.ROOT))
-                .collect(Collectors.toSet());
-
-        boolean roleCanManageUsers = normalizedRoles.stream()
-                .anyMatch(role -> role.contains("ADMIN") || role.contains("USER_MANAGER"));
-        boolean roleCanManageServices = normalizedRoles.stream()
-                .anyMatch(role -> role.contains("ADMIN") || role.contains("SERVICE_MANAGER"));
-
-        java.util.LinkedHashSet<String> computedPermissions = new java.util.LinkedHashSet<>();
-
-        if (normalizedRoles.contains("DEVELOPER") || normalizedRoles.contains("DEV")) {
-            computedPermissions.addAll(DEFAULT_READ_PERMISSIONS);
-        }
-
-        if (normalizedRoles.contains("VIEWER")) {
-            computedPermissions.add("logs:read");
-            computedPermissions.add("metrics:read");
-            computedPermissions.add(PERMISSION_SERVICES_READ);
-        }
-
-        if (computedPermissions.isEmpty() && allowedServices != null && !allowedServices.isEmpty()) {
-            computedPermissions.addAll(DEFAULT_READ_PERMISSIONS);
-        }
-
-        if (roleCanManageUsers) {
-            computedPermissions.add(PERMISSION_USERS_MANAGE);
-        }
-
-        if (roleCanManageServices) {
-            computedPermissions.add(PERMISSION_SERVICES_MANAGE);
-        }
-
-        return List.copyOf(computedPermissions);
-    }
-
     private boolean hasAdminPermission(List<String> permissionNames) {
         if (permissionNames == null || permissionNames.isEmpty()) {
             return false;
         }
-
         return permissionNames.stream()
                 .filter(Objects::nonNull)
                 .map(value -> value.trim().toLowerCase(Locale.ROOT))
@@ -577,33 +548,20 @@ public class ServiceAccessAuthorizationService {
         return false;
     }
 
-    private List<String> toDistinctStringList(Iterable<?> values) {
-        return java.util.stream.StreamSupport.stream(values.spliterator(), false)
-                .filter(Objects::nonNull)
-                .map(Object::toString)
-                .map(String::trim)
-                .filter(value -> !value.isBlank())
-                .distinct()
-                .toList();
-    }
+    // =========================================================================
+    // Private — context cache
+    // =========================================================================
 
     private AuthenticatedUserContext readCachedContext(String email) {
-        return readCachedContext(email, false).orElse(null);
-    }
-
-    private java.util.Optional<AuthenticatedUserContext> readCachedContext(String email, boolean allowExpired) {
         CachedAccessContext cached = contextCache.get(email);
         if (cached == null) {
-            return java.util.Optional.empty();
+            return null;
         }
-
-        long now = System.currentTimeMillis();
-        if (allowExpired || cached.expiresAtEpochMs() > now) {
-            return java.util.Optional.of(cached.context());
+        if (cached.expiresAtEpochMs() > System.currentTimeMillis()) {
+            return cached.context();
         }
-
         contextCache.remove(email, cached);
-        return java.util.Optional.empty();
+        return null;
     }
 
     private void writeCachedContext(String email, AuthenticatedUserContext context) {

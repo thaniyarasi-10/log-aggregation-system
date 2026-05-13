@@ -9,14 +9,14 @@
         </rollingPolicy>
 
         <encoder class="net.logstash.logback.encoder.LogstashEncoder">
-            <customFields>{"service":"log-controller-service","environment":"production"}</customFields>
+            <customFields>{"service":"log-controller-service","environment":"dev"}</customFields>
         </encoder>
     </appender>
 
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
             <pattern>
-                "level":"%level", "message":"%msg", "service":"log-controller-service", "environment":"production" \n
+                "level":"%level", "message":"%msg", "service":"log-controller-service", "environment":"dev" \n
             </pattern>
         </encoder>
     </appender>

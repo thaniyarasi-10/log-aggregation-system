@@ -134,3 +134,15 @@ export interface AlertItem {
 
 /** Raw response shape from GET /api/alerts — keyed by service name */
 export type AlertsResponse = Record<string, AlertItem[]>;
+
+/** Notification preference for the current user */
+export interface NotificationPreference {
+  emailEnabled: boolean;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+/** Request body for updating notification preferences */
+export interface NotificationPreferenceUpdate {
+  emailEnabled: boolean;
+}

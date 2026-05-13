@@ -520,7 +520,7 @@ def _create_timeline_line_chart(data):
 def ask_ai(question: str, services: list[str], role: str | None = None, logs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     _ = services
     if logs is None:
-        logs = fetch_logs(role or 'developer', services)
+        logs = fetch_logs(role or 'dev', services)
 
     if not logs:
         return {'type': 'text', 'answer': 'No data available for your role'}
@@ -529,7 +529,7 @@ def ask_ai(question: str, services: list[str], role: str | None = None, logs: li
     if any(keyword in text for keyword in ['report', 'summary', 'download']):
         summary = generate_summary(logs)
         # generate_pdf_report is imported from summary.py (presentation layer)
-        pdf_path = generate_pdf_report(summary, role or 'developer')
+        pdf_path = generate_pdf_report(summary, role or 'dev')
         return {'type': 'file', 'file': pdf_path}
 
     return {'type': 'text', 'answer': answer_query(question, logs)}

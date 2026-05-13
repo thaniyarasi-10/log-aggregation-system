@@ -1,63 +1,51 @@
 package com.kovanlabs.logcontroller.model;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
+import java.util.Objects;
 
-public class Alert {
+/**
+ * Immutable value object representing one active alert slot for a (service, severity) pair.
+ *
+ * <p>Immutability is intentional: the {@link com.kovanlabs.logcontroller.service.AlertService}
+ * replaces the entire object on every upsert rather than mutating fields in-place. This
+ * eliminates the need for field-level synchronization and makes concurrent reads safe without
+ * any locking.
+ *
+ * <p>Timestamps are always UTC {@link Instant} — no JVM-local time, no IST/UTC drift.
+ */
+public final class Alert {
 
-    private String service;
-    private String message;
-    private int count;
-    private String severity;
-    private LocalDateTime timestamp;
+    private final String service;
+    private final String message;
+    private final int count;
+    private final String severity;
+    private final Instant timestamp;
 
-    public Alert() {
+    public Alert(String service, String message, int count, String severity, Instant timestamp) {
+        this.service   = Objects.requireNonNull(service,   "service must not be null");
+        this.message   = Objects.requireNonNull(message,   "message must not be null");
+        this.severity  = Objects.requireNonNull(severity,  "severity must not be null");
+        this.timestamp = Objects.requireNonNull(timestamp, "timestamp must not be null");
+        this.count     = count;
     }
 
-    public Alert(String service, String message, int count, String severity, LocalDateTime timestamp) {
-        this.service = service;
-        this.message = message;
-        this.count = count;
-        this.severity = severity;
-        this.timestamp = timestamp;
+    public String getService()    { return service; }
+    public String getMessage()    { return message; }
+    public int    getCount()      { return count; }
+    public String getSeverity()   { return severity; }
+    public Instant getTimestamp() { return timestamp; }
+
+    /**
+     * Returns a new {@code Alert} with updated count, message, and timestamp,
+     * keeping service and severity unchanged (they are part of the map key).
+     */
+    public Alert withUpdate(int newCount, String newMessage, Instant newTimestamp) {
+        return new Alert(this.service, newMessage, newCount, this.severity, newTimestamp);
     }
 
-    public String getService() {
-        return service;
-    }
-
-    public void setService(String service) {
-        this.service = service;
-    }
-
-    public String getMessage() {
-        return message;
-    }
-
-    public void setMessage(String message) {
-        this.message = message;
-    }
-
-    public int getCount() {
-        return count;
-    }
-
-    public void setCount(int count) {
-        this.count = count;
-    }
-
-    public String getSeverity() {
-        return severity;
-    }
-
-    public void setSeverity(String severity) {
-        this.severity = severity;
-    }
-
-    public LocalDateTime getTimestamp() {
-        return timestamp;
-    }
-
-    public void setTimestamp(LocalDateTime timestamp) {
-        this.timestamp = timestamp;
+    @Override
+    public String toString() {
+        return "Alert{service='" + service + "', severity='" + severity +
+               "', count=" + count + ", timestamp=" + timestamp + '}';
     }
 }

@@ -91,7 +91,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const role = String(user?.role || '').toUpperCase();
   const isAdmin = role.includes('ADMIN') || Boolean(user?.canManageUsers) || Boolean(user?.canManageServices);
-  const isDev = role.includes('DEV') || role.includes('DEVELOPER') || (!isAdmin && status === 'authenticated');
+  const isDev = role.includes('DEV') || (!isAdmin && status === 'authenticated');
   const permissions = Array.isArray(user?.permissions) ? user.permissions.map((item) => String(item).toLowerCase()) : [];
   const canReadServices = permissions.includes('services:read') || permissions.includes('logs:read');
 

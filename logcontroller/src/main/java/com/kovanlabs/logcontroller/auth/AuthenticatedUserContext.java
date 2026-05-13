@@ -12,7 +12,7 @@ public record AuthenticatedUserContext(
 
     public AuthenticatedUserContext {
         email = email == null ? "unknown@local" : email;
-        role = role == null ? UserRole.USER : role;
+        role = role == null ? UserRole.DEV : role;
         allowedServices = allowedServices == null ? List.of() : List.copyOf(allowedServices);
         permissions = permissions == null ? List.of() : List.copyOf(permissions);
     }

@@ -9,6 +9,8 @@ import type {
   LogFilters,
   LogQueryParams,
   MetricsResponse,
+  NotificationPreference,
+  NotificationPreferenceUpdate,
   ServiceAccessRequest,
   ServiceRecord,
   UserRecord
@@ -31,7 +33,6 @@ const directApi = axios.create({
 });
 
 api.interceptors.request.use((config) => {
-  console.log('API CALL:', config.url, config.params);
   return config;
 });
 
@@ -386,9 +387,7 @@ export const apiService = {
   },
 
   async queryAgent(payload: AgentQueryRequest): Promise<AgentQueryResponse> {
-      console.log('[apiService.queryAgent] Request:', { mode: payload.mode });
     const response = await api.post<AgentQueryResponse>('/agent/query', payload);
-    console.log('[apiService.queryAgent] Response:', { status: response.status, data: response.data });
     return response.data;
   },
 
@@ -396,22 +395,36 @@ export const apiService = {
     try {
       const response = await api.get<AlertsResponse>('/alerts');
       const grouped = response.data;
-      if (!grouped || typeof grouped !== 'object') return [];
-      // Flatten the grouped-by-service map into a single sorted list
-      return Object.values(grouped)
-        .flat()
-        .sort((a, b) => {
-          // CRITICAL first, then WARNING, then by timestamp descending
-          if (a.severity !== b.severity) {
-            return a.severity === 'CRITICAL' ? -1 : 1;
-          }
-          const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
-          const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
-          return tb - ta;
-        });
+
+      if (!grouped || typeof grouped !== 'object' || Array.isArray(grouped)) {
+        return [];
+      }
+
+      // Backend returns { "service-name": [AlertItem, ...], ... }
+      // Flatten all service groups into a single list sorted by severity then timestamp.
+      return Object.values(grouped).flat().sort((a, b) => {
+        const severityRank = (s: string) => (s === 'CRITICAL' ? 0 : s === 'WARNING' ? 1 : 2);
+        const rankDiff = severityRank(a.severity) - severityRank(b.severity);
+        if (rankDiff !== 0) return rankDiff;
+        const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+        const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+        return tb - ta;
+      });
     } catch {
       return [];
     }
+  },
+
+  async getNotificationPreferences(): Promise<NotificationPreference> {
+    const response = await api.get<NotificationPreference>('/notifications/preferences');
+    return response.data;
+  },
+
+  async updateNotificationPreferences(
+    payload: NotificationPreferenceUpdate
+  ): Promise<NotificationPreference> {
+    const response = await api.put<NotificationPreference>('/notifications/preferences', payload);
+    return response.data;
   }
 };
 

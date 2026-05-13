@@ -67,7 +67,18 @@ def _parse_time_range(text: str) -> dict[str, Any]:
 
 
 def _normalize_role(role: str | None) -> str:
-    return str(role or "").strip().lower()
+    """
+    Normalize the role string to the agent's two internal values: "admin" or "dev".
+
+    The Spring Boot backend's UserRole enum has ADMIN and DEV.
+    The frontend sends role.name() from the enum, so non-admin users send "DEV".
+    Accept any reasonable variant and map to the canonical value.
+    """
+    raw = str(role or "").strip().lower()
+    if raw == "admin":
+        return "admin"
+    # "dev" or any other non-admin value → dev scope
+    return "dev"
 
 
 def _normalize_services(services: list[str] | None) -> list[str]:
@@ -121,12 +132,10 @@ def agent_query(payload: AgentQueryRequest):
         raise HTTPException(status_code=400, detail="query is required")
 
     role = _normalize_role(payload.role)
-    if role not in {"admin", "developer"}:
-        raise HTTPException(status_code=403, detail="Unsupported role")
 
     services = _normalize_services(payload.services)
-    if role == "developer" and not services:
-        raise HTTPException(status_code=400, detail="developer requests require assigned services")
+    if role == "dev" and not services:
+        raise HTTPException(status_code=400, detail="dev requests require assigned services")
 
     # Parse time range from the query text
     time_range = _parse_time_range(query)
@@ -231,7 +240,7 @@ def ask(payload: AskRequest):
         services = _normalize_services(payload.services)
         
         try:
-            logs = fetch_logs(role or "developer", services)
+            logs = fetch_logs(role or "dev", services)
         except Exception as e:
             logger.error(f"Error fetching logs: {str(e)}")
             return {"type": "text", "answer": "Unable to fetch logs. Please try again."}

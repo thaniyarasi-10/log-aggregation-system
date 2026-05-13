@@ -71,8 +71,8 @@ def fetch_logs(
 
     Parameters
     ----------
-    role     : "admin" or "developer"
-    services : list of service names (required for developer role)
+    role     : "admin" or "dev"
+    services : list of service names (required for dev role)
     start    : inclusive lower bound for timestamp (UTC-aware datetime)
     end      : inclusive upper bound for timestamp (UTC-aware datetime)
                Defaults to now when start is provided but end is omitted.
@@ -103,7 +103,7 @@ def fetch_logs(
     # ── Build base query ──────────────────────────────────────────────
     if role_name == "admin":
         query: dict[str, Any] = {}
-    elif role_name == "developer":
+    elif role_name == "dev":
         scoped_services = _normalize_services(services)
         if not scoped_services:
             return []
@@ -114,7 +114,7 @@ def fetch_logs(
             ]
         }
     else:
-        raise ValueError("Unsupported role")
+        raise ValueError(f"Unsupported role: {role_name!r}")
 
     # ── Apply time range filter ───────────────────────────────────────
     if start is not None:

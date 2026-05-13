@@ -14,7 +14,6 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import co.elastic.clients.elasticsearch._types.Refresh;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -46,12 +45,15 @@ public class ElasticRepository {
 
         private static final Logger LOGGER = LoggerFactory.getLogger(ElasticRepository.class);
 
-        private static final String LEVEL_KEYWORD   = "level.keyword";
-        private static final String SERVICE_KEYWORD = "service.keyword";
-                private static final String PROJECT_KEYWORD = "project.keyword";
+    private static final String LEVEL_FIELD       = "level";       // keyword, lowercase_normalizer
+    private static final String SERVICE_FIELD     = "service";     // keyword
+    private static final String ENVIRONMENT_FIELD = "environment"; // keyword
+    private static final String PROJECT_FIELD     = "project";     // keyword
+
+    // Error level value — must be lowercase to match the lowercase_normalizer on "level"
+    private static final String ERROR_LEVEL_VALUE = "error";
     private static final String INDEX_PATTERN   = "app-logs-*";
                 private static final String NO_ACCESS_SENTINEL = "__NO_ACCESS__";
-        private static final String ERROR_LEVEL = "ERROR";
         private static final String RESPONSE_TIME_FIELD = "responseTime";
         private static final String AGG_TOTAL_COUNT = "total_count";
         private static final String AGG_ERROR_COUNT = "error_count";
@@ -88,25 +90,98 @@ public class ElasticRepository {
     // SAVE
     public void save(LogEvent log) {
         long now = System.currentTimeMillis();
-        if (now < writesMutedUntilMs) return;
+
+        // Mute check — visible, counted, never silent
+        if (now < writesMutedUntilMs) {
+            long remainingMs = writesMutedUntilMs - now;
+            LOGGER.warn("ES WRITE MUTED — skipping index. Mute expires in {}ms. " +
+                    "Check earlier 'ES SAVE FAILED' log for the root cause.", remainingMs);
+            return;
+        }
+
+        if (log == null) {
+            LOGGER.warn("ES SAVE — received null LogEvent, skipping");
+            return;
+        }
+
+
+        if (!isValidForIndexing(log)) {
+            return;
+        }
+
+        String index = "app-logs-" + resolveIndexDate(log.getTimestamp());
+//        LOGGER.info(
+//                "INDEX NAME USED = {} | timestamp = {} | service = {}",
+//                index,
+//                log.getTimestamp(),
+//                log.getService()
+//        );
+//        LOGGER.debug("ES SAVE START — index={} service={} timestamp={}", index, log.getService(), log.getTimestamp());
 
         try {
-            String index = "app-logs-" + resolveIndexDate(log.getTimestamp());
+
             IndexRequest<LogEvent> request = IndexRequest.of(i -> i
                     .index(index)
                     .document(log)
-                    .refresh(Refresh.True)
             );
             client.index(request);
 
             if (writesMutedUntilMs != 0L) {
                 writesMutedUntilMs = 0L;
-                LOGGER.info("Elasticsearch connection restored. Resuming log persistence.");
+                LOGGER.info("ES SAVE — Elasticsearch connection restored. Resuming log persistence.");
+            }
+
+            //LOGGER.debug("ES SAVE SUCCESS — index={} service={}", index, log.getService());
+
+        } catch (co.elastic.clients.elasticsearch._types.ElasticsearchException esEx) {
+
+            int status = esEx.status();
+            if (status >= 400 && status < 500) {
+                LOGGER.error("ES SAVE FAILED — non-retryable HTTP {} from Elasticsearch. " +
+                        "Likely cause: mapping conflict or malformed field. " +
+                        "index={} service={} timestamp={} error={}",
+                        status, index, log.getService(), log.getTimestamp(), esEx.getMessage(), esEx);
+                // Do NOT mute writes for client errors — the next document may be fine.
+            } else {
+                writesMutedUntilMs = now + WRITE_BACKOFF_MS;
+                LOGGER.error("ES SAVE FAILED — HTTP {} from Elasticsearch. " +
+                        "Writes muted for {}ms. index={} service={} error={}",
+                        status, WRITE_BACKOFF_MS, index, log.getService(), esEx.getMessage(), esEx);
             }
         } catch (Exception e) {
+            // Covers connection failures, timeouts, serialization errors, etc.
             writesMutedUntilMs = now + WRITE_BACKOFF_MS;
-            LOGGER.error("FULL ES SAVE ERROR", e);
+            LOGGER.error("ES SAVE FAILED — unexpected exception. " +
+                    "Writes muted for {}ms. index={} service={} timestamp={} exceptionType={} message={}",
+                    WRITE_BACKOFF_MS, index, log.getService(), log.getTimestamp(),
+                    e.getClass().getSimpleName(), e.getMessage(), e);
         }
+    }
+
+    private boolean isValidForIndexing(LogEvent log) {
+        // @timestamp must be a valid ISO-8601 instant — ES will reject anything else
+        // against the "strict_date_optional_time||epoch_millis" format in the mapping.
+        if (log.getTimestamp() != null && !log.getTimestamp().isBlank()) {
+            try {
+                Instant.parse(log.getTimestamp());
+            } catch (java.time.format.DateTimeParseException e) {
+                LOGGER.error("ES SAVE SKIPPED — invalid @timestamp '{}' for service='{}'. " +
+                        "Expected ISO-8601 format (e.g. 2026-05-12T10:00:00Z). " +
+                        "This document would cause a mapping conflict and has been dropped.",
+                        log.getTimestamp(), log.getService());
+                return false;
+            }
+        }
+
+        // service and message are the minimum fields needed for a useful log entry.
+        // Indexing a document with both null would pollute the index with useless records.
+        if ((log.getService() == null || log.getService().isBlank()) &&
+                (log.getMessage() == null || log.getMessage().isBlank())) {
+            LOGGER.warn("ES SAVE SKIPPED — document has no service and no message. Dropping to avoid index pollution.");
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -139,7 +214,8 @@ public class ElasticRepository {
         long now = System.currentTimeMillis();
         if (writesMutedUntilMs != 0L && now >= writesMutedUntilMs) {
             writesMutedUntilMs = 0L;
-            LOGGER.info("Write mute period expired — ES writes re-enabled.");
+            LOGGER.info("ES WRITE MUTE — backoff period expired. ES writes re-enabled. " +
+                    "If indexing still fails, check ES cluster health and index mappings.");
         }
     }
 
@@ -150,7 +226,8 @@ public class ElasticRepository {
                                  int page, int size,
                                  AuthenticatedUserContext accessContext) {
         try {
-		LOGGER.error("RAW INPUT → service: [{}], level: [{}]", service, level);
+		LOGGER.debug("SEARCH INPUT → service=[{}] environment=[{}] level=[{}] traceId=[{}] message=[{}]",
+				service, environment, level, traceId, message);
 
 		TimeBounds bounds = resolveTimeBounds(from, to);
 		
@@ -159,26 +236,76 @@ public class ElasticRepository {
 		if (service != null && !service.isBlank() && !"All Services".equalsIgnoreCase(service)) {
 			boolQueryBuilder.must(
 				QueryBuilders.term(t -> t
-					.field("service.keyword")
-					.value(service.trim())
+					.field(SERVICE_FIELD)
+					.value(service.trim().toLowerCase(java.util.Locale.ROOT))
+				)
+			);
+		}
+
+		if (environment != null && !environment.isBlank()) {
+			// "environment" is a pure keyword field — query directly, no .keyword sub-field
+			boolQueryBuilder.must(
+				QueryBuilders.term(t -> t
+					.field(ENVIRONMENT_FIELD)
+					.value(environment.trim().toLowerCase(java.util.Locale.ROOT))
 				)
 			);
 		}
 
 		if (level != null && !level.isBlank()) {
+			// "level" is a keyword field with lowercase_normalizer — values must be lowercase.
 			boolQueryBuilder.must(
 				QueryBuilders.term(t -> t
-					.field("level.keyword")
-					.value(level.trim().toUpperCase())
+					.field(LEVEL_FIELD)
+					.value(level.trim().toLowerCase(java.util.Locale.ROOT))
 				)
 			);
 		}
+		if (traceId != null && !traceId.isBlank()) {
+			// traceId is stored as-is — use term for exact match.
+			// Try both camelCase and snake_case field names to handle varied log formats.
+			boolQueryBuilder.must(
+				QueryBuilders.bool(b -> b
+					.should(s -> s.term(t -> t.field("traceId").value(traceId.trim())))
+					.should(s -> s.term(t -> t.field("trace_id").value(traceId.trim())))
+					.minimumShouldMatch("1")
+				)
+			);
+		}
+
             if (message != null && !message.isBlank()) {
+                String trimmed = message.trim();
+                // "message" is a full-text analyzed field (type: text).
+                // Use match query — NOT term query — so Elasticsearch applies the same
+                // analyzer used at index time (tokenization, lowercasing, stemming).
+                //
+                // Strategy: combine match (token-based) with match_phrase (exact phrase)
+                // in a should clause so that:
+                //   - Single words match any document containing that token ("error" → hits)
+                //   - Multi-word inputs match documents containing all tokens (OR) OR the
+                //     exact phrase (boosted), giving phrase matches higher relevance.
+                //
+                // Operator.OR is used so "database timeout" returns docs with either word,
+                // not just docs containing both — this is the expected "contains" behavior
+                // for log search. The match_phrase clause boosts exact phrase matches.
                 boolQueryBuilder.must(
-                    QueryBuilders.match(m -> m
-                        .field("message")
-                        .query(message.trim())
-                        .operator(co.elastic.clients.elasticsearch._types.query_dsl.Operator.And)
+                    QueryBuilders.bool(inner -> inner
+                        .should(s -> s
+                            .match(m -> m
+                                .field("message")
+                                .query(trimmed)
+                                .operator(co.elastic.clients.elasticsearch._types.query_dsl.Operator.Or)
+                                .minimumShouldMatch("1")
+                            )
+                        )
+                        .should(s -> s
+                            .matchPhrase(mp -> mp
+                                .field("message")
+                                .query(trimmed)
+                                .boost(2.0f)
+                            )
+                        )
+                        .minimumShouldMatch("1")
                     )
                 );
             }
@@ -204,7 +331,7 @@ public class ElasticRepository {
 										.order(SortOrder.Desc)))
 		);
 
-		LOGGER.error("FINAL QUERY JSON → {}", boolQuery._toQuery());
+		LOGGER.debug("ES LOG SEARCH QUERY={}", boolQuery._toQuery());
 
 		SearchResponse<LogEvent> response = client.search(request, LogEvent.class);
 		//LOGGER.error("TOTAL HITS → {}", response.getHits().getTotalHits().value());
@@ -242,12 +369,12 @@ public class ElasticRepository {
                                         .size(0)
                                         .aggregations("services", a -> a
                                                         .terms(t -> t
-                                                                        .field(SERVICE_KEYWORD)
+                                                                        .field(SERVICE_FIELD)
                                                                         .size(Math.max(1, maxServices))
                                                         ))
                                         .aggregations("projects", a -> a
                                                         .terms(t -> t
-                                                                        .field(PROJECT_KEYWORD)
+                                                                        .field(PROJECT_FIELD)
                                                                         .size(Math.max(1, maxServices))
                                                         ))
                         );
@@ -327,6 +454,7 @@ public class ElasticRepository {
 
         private SearchRequest buildMetricsRequest(String service, TimeBounds bounds, String interval, AuthenticatedUserContext accessContext) {
         BoolQuery boolQuery = BoolQuery.of(b -> b.filter(buildMetricFilters(service, bounds, accessContext)));
+        LOGGER.debug("ES METRICS QUERY → {}", boolQuery._toQuery());
 
         return SearchRequest.of(s -> s
                 .index(INDEX_PATTERN)
@@ -337,8 +465,9 @@ public class ElasticRepository {
                 .aggregations(AGG_ERROR_COUNT, a -> a
                         .filter(f -> f
                                 .term(t -> t
-                                        .field(LEVEL_KEYWORD)
-                                        .value(ERROR_LEVEL))))
+                                        // "level" is keyword with lowercase_normalizer — use lowercase value
+                                        .field(LEVEL_FIELD)
+                                        .value(ERROR_LEVEL_VALUE))))
                 .aggregations(AGG_AVG_RESPONSE_TIME, a -> a
                         .avg(avg -> avg.field(RESPONSE_TIME_FIELD)))
                 .aggregations(AGG_P95_LATENCY, a -> a
@@ -347,7 +476,8 @@ public class ElasticRepository {
                                 .percents(95.0)))
                 .aggregations(AGG_LEVEL_DISTRIBUTION, a -> a
                         .terms(t -> t
-                                .field(LEVEL_KEYWORD)
+                                // "level" is already a keyword field — no .keyword sub-field needed
+                                .field(LEVEL_FIELD)
                                 .size(10)))
                 .aggregations(AGG_THROUGHPUT_OVER_TIME, a -> a
                         .dateHistogram(dh -> dh
@@ -361,8 +491,9 @@ public class ElasticRepository {
                         .aggregations(AGG_BUCKET_ERROR_COUNT, sub -> sub
                                 .filter(f -> f
                                         .term(t -> t
-                                                .field(LEVEL_KEYWORD)
-                                                .value(ERROR_LEVEL))))
+                                                // "level" keyword with lowercase_normalizer
+                                                .field(LEVEL_FIELD)
+                                                .value(ERROR_LEVEL_VALUE))))
                         .aggregations(AGG_BUCKET_AVG_RESPONSE_TIME, sub -> sub
                                 .avg(avg -> avg.field(RESPONSE_TIME_FIELD))))
         );
@@ -378,8 +509,9 @@ public class ElasticRepository {
         if (service != null && !service.isBlank() && !"All Services".equalsIgnoreCase(service)) {
             filters.add(
                     TermQuery.of(t -> t
-                            .field("service.keyword")
-                            .value(service.trim())
+                            // "service" is a pure keyword field — no .keyword sub-field
+                            .field(SERVICE_FIELD)
+                            .value(service.trim().toLowerCase(java.util.Locale.ROOT))
                     )._toQuery()
             );
         }
@@ -621,7 +753,8 @@ public class ElasticRepository {
                                         .size(0)
                                         .aggregations("errors_by_service", a -> a
                                                         .terms(t -> t
-                                                                        .field(SERVICE_KEYWORD)
+                                                                        // "service" is a pure keyword field — no .keyword sub-field
+                                                                        .field(SERVICE_FIELD)
                                                                         .size(maxServices))));
 
                         SearchResponse<Void> response = client.search(request, Void.class);
@@ -646,7 +779,8 @@ public class ElasticRepository {
                 long now = System.currentTimeMillis();
                 if (now >= nextErrorLogAtMs) {
                         nextErrorLogAtMs = now + ERROR_LOG_THROTTLE_MS;
-                        LOGGER.warn("Elasticsearch {} failed: {}", operation, e.getMessage());
+                        LOGGER.error("Elasticsearch {} failed (throttled — next log in {}ms): {} — {}",
+                                operation, ERROR_LOG_THROTTLE_MS, e.getClass().getSimpleName(), e.getMessage(), e);
                 }
         }
 
@@ -703,6 +837,8 @@ public class ElasticRepository {
 
                 List<FieldValue> fieldValues = allowedServices.stream()
                         .filter(this::hasText)
+                        .map(String::trim)
+                        .map(s -> s.toLowerCase(java.util.Locale.ROOT))
                         .map(FieldValue::of)
                         .toList();
 
@@ -711,14 +847,16 @@ public class ElasticRepository {
                 }
 
                 return Optional.of(QueryBuilders.terms()
-                        .field(SERVICE_KEYWORD)
+                        // "service" is a pure keyword field — no .keyword sub-field
+                        .field(SERVICE_FIELD)
                         .terms(v -> v.value(fieldValues))
                         .build()._toQuery());
         }
 
         private Query noAccessQuery() {
                 return TermQuery.of(t -> t
-                                .field(SERVICE_KEYWORD)
+                                // "service" is a pure keyword field
+                                .field(SERVICE_FIELD)
                                 .value(NO_ACCESS_SENTINEL)
                 )._toQuery();
         }
@@ -799,15 +937,19 @@ public class ElasticRepository {
         }
 
         private List<Query> buildErrorWindowFilters(String windowExpression) {
-                return Stream.of(
-                                                TermQuery.of(t -> t
-                                                                .field(LEVEL_KEYWORD)
-                                                                .value("ERROR"))._toQuery(),
-                                                RangeQuery.of(r -> r
-                                                                .field("@timestamp")
-                                                                .gte(JsonData.of("now-" + windowExpression))
-                                                                .lte(JsonData.of("now")))._toQuery()
+                List<Query> filters = Stream.of(
+                                // "level" is a keyword field with lowercase_normalizer.
+                                // The value MUST be lowercase — "ERROR" would match zero documents.
+                                TermQuery.of(t -> t
+                                                .field(LEVEL_FIELD)
+                                                .value(ERROR_LEVEL_VALUE))._toQuery(),
+                                RangeQuery.of(r -> r
+                                                .field("@timestamp")
+                                                .gte(JsonData.of("now-" + windowExpression))
+                                                .lte(JsonData.of("now")))._toQuery()
                                 )
                                 .toList();
+                LOGGER.debug("ES ALERT WINDOW FILTERS → level={} window={}", ERROR_LEVEL_VALUE, windowExpression);
+                return filters;
         }
 }

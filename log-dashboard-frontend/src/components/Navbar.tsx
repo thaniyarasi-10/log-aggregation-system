@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { apiService } from '../services/api';
 import type { AlertItem } from '../types';
+import NotificationSettings from './NotificationSettings';
 
 const getClassName = ({ isActive }: { isActive: boolean }) =>
   isActive ? 'header-nav-link active' : 'header-nav-link';
@@ -58,9 +59,10 @@ export default function Navbar() {
   const { user, role, canAccessUsers, canAccessServices, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
 
-  const [profileOpen, setProfileOpen] = useState(false);
-  const [notifOpen, setNotifOpen] = useState(false);
-  const [alerts, setAlerts] = useState<AlertItem[]>([]);
+  const [profileOpen, setProfileOpen]   = useState(false);
+  const [notifOpen, setNotifOpen]       = useState(false);
+  const [notifPanelOpen, setNotifPanelOpen] = useState(false);
+  const [alerts, setAlerts]             = useState<AlertItem[]>([]);
   const [alertsLoading, setAlertsLoading] = useState(false);
 
   const profileRef = useRef<HTMLDivElement>(null);
@@ -80,16 +82,41 @@ export default function Navbar() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Fetch alerts when notification panel opens
+  // Background polling — runs every 60 s regardless of panel state.
+  // This keeps the red-dot indicator accurate without requiring the user to open the panel.
+  useEffect(() => {
+    let active = true;
+
+    const poll = async () => {
+      try {
+        const data = await apiService.fetchAlerts();
+        if (active) setAlerts(data);
+      } catch {
+        // silently ignore — stale data is fine for the indicator
+      }
+    };
+
+    void poll(); // immediate fetch on mount
+    const timer = window.setInterval(() => { void poll(); }, 60_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  // Refresh immediately when the panel is opened so the user always sees fresh data.
+  // Don't show the loading spinner if we already have alerts — just update silently.
   useEffect(() => {
     if (!notifOpen) return;
     let active = true;
-    setAlertsLoading(true);
+    // Only show loading spinner on first open (no existing data)
+    if (alerts.length === 0) setAlertsLoading(true);
     apiService.fetchAlerts()
       .then((data) => { if (active) setAlerts(data); })
-      .catch(() => { if (active) setAlerts([]); })
+      .catch(() => { /* keep existing alerts on error */ })
       .finally(() => { if (active) setAlertsLoading(false); });
     return () => { active = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notifOpen]);
 
   const displayName = user?.name || user?.email || 'User';
@@ -176,7 +203,7 @@ export default function Navbar() {
       <div className="profile-anchor" ref={profileRef}>
         <button
           className={`profile-trigger ${profileOpen ? 'active' : ''}`}
-          onClick={() => { setProfileOpen((o) => !o); setNotifOpen(false); }}
+          onClick={() => { setProfileOpen((o) => !o); setNotifOpen(false); setNotifPanelOpen(false); }}
           aria-label="Profile"
           title="Profile"
         >
@@ -194,12 +221,45 @@ export default function Navbar() {
             </div>
             <div className="header-dropdown-divider" />
             <button
+              className="header-profile-action"
+              onClick={() => { setProfileOpen(false); setNotifPanelOpen(true); }}
+            >
+              🔔 Notification Settings
+            </button>
+            <div className="header-dropdown-divider" />
+            <button
               className="header-profile-logout"
               onClick={() => { setProfileOpen(false); void logout(); }}
             >
               Sign out
             </button>
           </div>
+        )}
+
+        {/* Notification settings side panel — slides in above the profile anchor */}
+        {notifPanelOpen && (
+          <>
+            <div
+              className="ns-panel-backdrop"
+              onClick={() => setNotifPanelOpen(false)}
+              aria-hidden="true"
+            />
+            <div className="ns-panel" role="dialog" aria-label="Notification Settings">
+              <div className="ns-panel-header">
+                <span className="ns-panel-title">Notification Settings</span>
+                <button
+                  className="ns-panel-close"
+                  onClick={() => setNotifPanelOpen(false)}
+                  aria-label="Close"
+                >
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                  </svg>
+                </button>
+              </div>
+              <NotificationSettings onSaved={() => setNotifPanelOpen(false)} />
+            </div>
+          </>
         )}
       </div>
     </>

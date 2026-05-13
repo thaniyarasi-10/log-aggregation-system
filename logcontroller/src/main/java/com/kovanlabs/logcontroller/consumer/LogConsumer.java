@@ -21,7 +21,9 @@ public class LogConsumer {
             containerFactory = "kafkaListenerContainerFactory"
     )
     public void consume(String message) {
-        LOGGER.debug("Kafka message received (length={})", message == null ? 0 : message.length());
+//        LOGGER.info("KAFKA RECEIVED — length={} preview='{}'",
+//                message == null ? 0 : message.length(),
+//                message == null ? "null" : message.substring(0, Math.min(120, message.length())));
         try {
             service.processKafkaRecord(message);
         } catch (RuntimeException ex) {

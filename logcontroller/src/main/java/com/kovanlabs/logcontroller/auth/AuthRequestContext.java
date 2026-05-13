@@ -1,21 +1,25 @@
 package com.kovanlabs.logcontroller.auth;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.Locale;
-import java.util.Objects;
-
 import static org.springframework.http.HttpStatus.UNAUTHORIZED;
 import org.springframework.security.core.Authentication;
-import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.oauth2.core.oidc.user.OidcUser;
-import org.springframework.security.oauth2.core.user.OAuth2User;
 import org.springframework.web.server.ResponseStatusException;
 
 import jakarta.servlet.http.HttpServletRequest;
 
+/**
+ * Request-scoped helper that retrieves the RBAC context for the current HTTP request.
+ *
+ * <p><strong>Security note:</strong> This class no longer builds an
+ * {@link AuthenticatedUserContext} from OAuth token claims. All authorization
+ * decisions must go through
+ * {@link com.kovanlabs.logcontroller.service.ServiceAccessAuthorizationService},
+ * which is the only place that performs DB-backed RBAC resolution.
+ *
+ * <p>This class is kept for backward compatibility with any code that calls
+ * {@link #getRequired(HttpServletRequest)}, but callers should prefer injecting
+ * {@code ServiceAccessAuthorizationService} directly.
+ */
 public final class AuthRequestContext {
 
     private static final String REQUEST_ATTR = AuthRequestContext.class.getName() + ".context";
@@ -23,6 +27,16 @@ public final class AuthRequestContext {
     private AuthRequestContext() {
     }
 
+    /**
+     * Returns the RBAC context previously stored on the request by a controller
+     * that already called {@code ServiceAccessAuthorizationService.getCurrentUserAccessContext()}.
+     *
+     * <p>If no context has been stored yet, this method verifies that the request
+     * is authenticated and throws 401 if not. It does <em>not</em> perform a DB
+     * lookup — callers must use {@code ServiceAccessAuthorizationService} for that.
+     *
+     * @throws ResponseStatusException 401 if the request is not authenticated
+     */
     public static AuthenticatedUserContext getRequired(HttpServletRequest request) {
         Object existing = request.getAttribute(REQUEST_ATTR);
         if (existing instanceof AuthenticatedUserContext context) {
@@ -34,77 +48,22 @@ public final class AuthRequestContext {
             throw new ResponseStatusException(UNAUTHORIZED, "Authentication required");
         }
 
-        AuthenticatedUserContext context = fromAuthentication(authentication);
-        request.setAttribute(REQUEST_ATTR, context);
-        return context;
+        // No DB-backed context is available on this request yet.
+        // Callers must use ServiceAccessAuthorizationService.getCurrentUserAccessContext()
+        // to obtain a fully resolved RBAC context before calling this method.
+        throw new ResponseStatusException(UNAUTHORIZED,
+                "RBAC context not initialized for this request. " +
+                "Use ServiceAccessAuthorizationService.getCurrentUserAccessContext() first.");
     }
 
-    private static AuthenticatedUserContext fromAuthentication(Authentication authentication) {
-        String email = resolveEmail(authentication.getPrincipal(), authentication.getName());
-
-        boolean isAdmin = authentication.getAuthorities().stream()
-                .map(GrantedAuthority::getAuthority)
-                .filter(Objects::nonNull)
-                .map(value -> value.toLowerCase(Locale.ROOT))
-                .anyMatch(value -> value.contains("admin"));
-
-        UserRole role = isAdmin ? UserRole.ADMIN : UserRole.USER;
-
-        List<String> allowedServices = extractAllowedServices(authentication.getPrincipal());
-        return new AuthenticatedUserContext(email, role, allowedServices, List.of());
-    }
-
-    private static String resolveEmail(Object principal, String fallback) {
-        if (principal instanceof OidcUser oidcUser) {
-            return firstNonBlank(
-                    oidcUser.getEmail(),
-                    oidcUser.getPreferredUsername(),
-                    oidcUser.getAttribute("upn"),
-                    oidcUser.getAttribute("email"),
-                    fallback);
+    /**
+     * Stores a resolved RBAC context on the request so it can be retrieved cheaply
+     * by subsequent calls to {@link #getRequired(HttpServletRequest)} within the
+     * same request lifecycle.
+     */
+    public static void store(HttpServletRequest request, AuthenticatedUserContext context) {
+        if (request != null && context != null) {
+            request.setAttribute(REQUEST_ATTR, context);
         }
-
-        if (principal instanceof OAuth2User oauth2User) {
-            return firstNonBlank(
-                    oauth2User.getAttribute("email"),
-                    oauth2User.getAttribute("preferred_username"),
-                    oauth2User.getAttribute("upn"),
-                    fallback);
-        }
-
-        return fallback;
-    }
-
-    private static List<String> extractAllowedServices(Object principal) {
-        Object raw = null;
-        if (principal instanceof OidcUser oidcUser) {
-            raw = oidcUser.getAttribute("allowed_services");
-        } else if (principal instanceof OAuth2User oauth2User) {
-            raw = oauth2User.getAttribute("allowed_services");
-        }
-
-        if (raw instanceof Collection<?> collection) {
-            List<String> values = new ArrayList<>();
-            for (Object value : collection) {
-                if (value != null) {
-                    String text = value.toString().trim();
-                    if (!text.isBlank()) {
-                        values.add(text);
-                    }
-                }
-            }
-            return values;
-        }
-
-        return List.of();
-    }
-
-    private static String firstNonBlank(String... values) {
-        for (String value : values) {
-            if (value != null && !value.isBlank()) {
-                return value;
-            }
-        }
-        return "unknown@local";
     }
 }

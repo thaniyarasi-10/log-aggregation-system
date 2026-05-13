@@ -53,7 +53,10 @@ export default function FloatingAgent() {
     window.setTimeout(() => ref.current?.focus(), 50);
   }, [isOpen, activeTab]);
 
-  const roleValue = String(user?.role || (isAdmin ? 'admin' : 'developer')).trim();
+  // Map the backend UserRole enum value to the agent's expected role string.
+  // The Spring Boot UserRole enum has ADMIN and DEV.
+  // The agent expects "admin" or "dev".
+  const roleValue = isAdmin ? 'admin' : 'dev';
 
   // ── Ask mode submit
   const handleAskSubmit = async (event) => {
@@ -62,7 +65,7 @@ export default function FloatingAgent() {
     if (!trimmed || askLoading) return;
 
     if (!isAdmin && !scopedServices.length) {
-      setAskError('Developer requests require assigned services.');
+      setAskError('DEV requests require assigned services.');
       return;
     }
 
@@ -98,7 +101,7 @@ export default function FloatingAgent() {
         { id: `ai-${Date.now()}`, role: 'assistant', text: answerText }
       ]);
     } catch (err) {
-      const msg = extractApiErrorMessage(err, 'Agent request failed');
+      const msg = extractApiErrorMessage(err, 'Agent request failed. Please try again.');
       setAskError(msg);
       setAskMessages((prev) => [
         ...prev,
@@ -116,7 +119,7 @@ export default function FloatingAgent() {
     if (!trimmed || summaryLoading) return;
 
     if (!isAdmin && !scopedServices.length) {
-      setSummaryError('Developer requests require assigned services.');
+      setSummaryError('DEV requests require assigned services.');
       return;
     }
 
@@ -160,7 +163,7 @@ export default function FloatingAgent() {
 
       setSummaryError('No summary data available for your role and time range.');
     } catch (err) {
-      setSummaryError(extractApiErrorMessage(err, 'Summary request failed'));
+      setSummaryError(extractApiErrorMessage(err, 'Summary request failed. Please try again.'));
     } finally {
       setSummaryLoading(false);
     }

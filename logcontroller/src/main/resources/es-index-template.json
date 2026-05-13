@@ -1,0 +1,83 @@
+{
+  "index_patterns": ["app-logs-*"],
+  "priority": 100,
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "refresh_interval": "1s",
+      "index.mapping.total_fields.limit": 200,
+      "analysis": {
+        "normalizer": {
+          "lowercase_normalizer": {
+            "type": "custom",
+            "filter": ["lowercase"]
+          }
+        }
+      }
+    },
+    "mappings": {
+      "dynamic": "true",
+      "properties": {
+        "@timestamp": {
+          "type": "date",
+          "format": "strict_date_optional_time||epoch_millis"
+        },
+        "service": {
+          "type": "keyword"
+        },
+        "level": {
+          "type": "keyword",
+          "normalizer": "lowercase_normalizer"
+        },
+        "environment": {
+          "type": "keyword"
+        },
+        "message": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "ignore_above": 512
+            }
+          }
+        },
+        "responseTime": {
+          "type": "double"
+        },
+        "statusCode": {
+          "type": "integer"
+        },
+        "traceId": {
+          "type": "keyword"
+        },
+        "spanId": {
+          "type": "keyword"
+        },
+        "userId": {
+          "type": "keyword"
+        },
+        "endpoint": {
+          "type": "keyword"
+        },
+        "method": {
+          "type": "keyword"
+        },
+        "instance": {
+          "type": "keyword"
+        },
+        "errorCode": {
+          "type": "keyword"
+        },
+        "errorDetails": {
+          "type": "text"
+        }
+      }
+    },
+    "aliases": {}
+  },
+  "composed_of": [],
+  "_meta": {
+    "description": "app-logs index template — explicit mappings prevent type conflicts across services"
+  }
+}

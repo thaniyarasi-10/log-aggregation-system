@@ -58,9 +58,9 @@ export default function AgentPanel() {
       return;
     }
 
-    const roleValue = String(user?.role || (isAdmin ? 'admin' : 'developer')).trim();
+    const roleValue = String(user?.role || (isAdmin ? 'admin' : 'dev')).trim();
     if (!isAdmin && !scopedServices.length) {
-      setError('Developer requests require assigned services.');
+      setError('DEV requests require assigned services.');
       return;
     }
 
@@ -108,7 +108,7 @@ export default function AgentPanel() {
           <p className="agent-subtitle">
             {isAdmin
               ? 'Admins can query every service in the cluster.'
-              : `Developer scope: ${safeJoin(scopedServices) || 'No assigned services'}`}
+              : `DEV scope: ${safeJoin(scopedServices) || 'No assigned services'}`}
           </p>
         </div>
 

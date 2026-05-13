@@ -175,10 +175,10 @@ body {
 #app-container {
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  width: 100vw;
-  overflow: hidden;
+  min-height: 100vh;   /* page-scroll model: content drives height */
+  width: 100%;
   background: var(--bg);
+  /* No overflow: hidden — the browser's native scroll is the scroll surface */
 }
 
 /* ---- GLASS PANEL — solid surface, no blur ---- */
@@ -198,7 +198,9 @@ body {
   border-bottom: 1px solid var(--border);
   background: var(--surface);
   flex-shrink: 0;
-  z-index: 10;
+  position: sticky;    /* navbar stays visible as sections scroll past */
+  top: 0;
+  z-index: 100;        /* above all section content */
 }
 
 .header-logo {
@@ -460,6 +462,25 @@ body {
   background: rgba(252, 68, 68, 0.07);
 }
 
+/* Non-destructive profile menu action (e.g. Notification Settings) */
+.header-profile-action {
+  display: block;
+  width: 100%;
+  padding: 7px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  font-family: var(--font-family);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.header-profile-action:hover {
+  background: var(--btn-hover-bg);
+}
+
 /* ---- BOTTOM-LEFT PROFILE ANCHOR ---- */
 .profile-anchor {
   position: fixed;
@@ -515,11 +536,22 @@ body {
 }
 
 /* ---- LAYOUT ---- */
+
+/*
+ * Section-scroll architecture
+ * ----------------------------
+ * The page is a normal document flow. Two full-viewport sections stack vertically:
+ *   Section 1 — analytics (metrics + charts): height ~100vh
+ *   Section 2 — live logs explorer:           height ~100vh
+ *
+ * The navbar is sticky (z-index 100). The sidebar is sticky within the grid row.
+ * The logs table scrolls internally inside its section — no competing scroll containers.
+ */
+
 .dashboard-grid {
   display: flex;
-  flex: 1;
-  gap: 0;
-  overflow: hidden;
+  align-items: flex-start; /* sidebar and main start at the same top edge */
+  width: 100%;
 }
 
 .filters-sidebar {
@@ -528,10 +560,14 @@ body {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  overflow-y: auto;
   border-right: 1px solid var(--border);
   background: var(--surface);
   flex-shrink: 0;
+  /* Sticky: sidebar stays in view as the user scrolls through both sections */
+  position: sticky;
+  top: 44px;                        /* offset by navbar height */
+  height: calc(100vh - 44px);       /* fills the visible area below the navbar */
+  overflow-y: auto;                 /* sidebar scrolls independently if filters overflow */
 }
 
 .filters-sidebar h2 {
@@ -580,14 +616,32 @@ body {
   border-color: var(--accent-color);
 }
 
+/* Main content column — grows to fill the space beside the sidebar */
 .dashboard-main {
   flex: 1;
+  min-width: 0;        /* prevent flex child from overflowing */
   display: flex;
   flex-direction: column;
-  gap: 0;
-  overflow-y: auto;
   background: var(--bg);
-  min-width: 0; /* prevent flex child from overflowing */
+}
+
+/* ---- SECTION 1: Analytics ---- */
+/* Content-driven height — cards + charts stack naturally with no artificial padding.
+   The section is exactly as tall as its content; no min-height forces empty space. */
+.dashboard-analytics {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 2px solid var(--border);
+}
+
+/* ---- SECTION 2: Logs explorer ---- */
+/* Tall enough to dominate the viewport once scrolled into view, but starts
+   immediately after the analytics section with no gap. The table scrolls
+   internally; the section itself does not scroll. */
+.dashboard-logs {
+  min-height: calc(100vh - 44px);   /* fills the viewport when in view */
+  display: flex;
+  flex-direction: column;
 }
 
 /* ---- METRICS ---- */
@@ -596,7 +650,7 @@ body {
   grid-template-columns: repeat(4, 1fr);
   gap: 0;
   border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
+  flex-shrink: 0;   /* never compress metric cards */
 }
 
 .metric-card {
@@ -641,8 +695,8 @@ body {
   grid-template-columns: 1fr 1fr;
   gap: 0;
   border-bottom: 1px solid var(--border);
-  min-height: 260px;
-  flex-shrink: 0;
+  height: 240px;     /* fixed height — charts are a fixed-size analytics band, not fluid */
+  flex-shrink: 0;    /* never compress charts to give space to logs */
 }
 
 /* Second charts-row (throughput + level distribution) needs a top border
@@ -692,11 +746,10 @@ body {
 /* ---- LOGS TABLE ---- */
 .table-container {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  min-height: 300px;
-  /* Section separation: top border creates a clear divider between stacked panels */
   border-top: 1px solid var(--border);
 }
 
@@ -714,7 +767,10 @@ body {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
-  min-height: 38px; /* consistent header height across all panels */
+  min-height: 38px;  /* consistent header height across all panels */
+  position: sticky;  /* sticky header — stays visible during log scroll */
+  top: 0;
+  z-index: 2;        /* above table rows */
 }
 
 /* Section headings inside table-header */
@@ -732,6 +788,7 @@ body {
 
 .table-scroll-area {
   flex: 1;
+  min-height: 0;     /* allows this area to shrink — required for overflow-y to activate */
   overflow-y: auto;
   overflow-x: auto;
 }
@@ -1137,21 +1194,35 @@ body {
   }
   .charts-row {
     grid-template-columns: 1fr;
+    height: 200px;
   }
 }
 
 @media (max-width: 900px) {
+  /* On narrow screens the sidebar stacks above the main content.
+     The whole page becomes a normal document flow so the user can scroll
+     through filters → analytics → logs naturally. */
   .dashboard-grid {
     flex-direction: column;
-    overflow-y: auto;
+    overflow-y: auto;   /* page-level scroll on mobile */
+    overflow-x: hidden;
   }
   .filters-sidebar {
     width: 100%;
     border-right: none;
     border-bottom: 1px solid var(--border);
+    overflow: visible;  /* sidebar doesn't need its own scroll on mobile */
   }
   .dashboard-main {
-    overflow: visible;
+    overflow: visible;  /* let the page scroll handle it */
+    min-height: 0;
+  }
+  .dashboard-logs {
+    /* Give logs a sensible minimum on mobile so they're usable */
+    min-height: 60vh;
+  }
+  .table-container {
+    min-height: 60vh;
   }
   .header-actions {
     flex-wrap: wrap;
@@ -1164,6 +1235,8 @@ body {
   /* Stack charts 1-up on narrow screens */
   .charts-row {
     grid-template-columns: 1fr;
+    height: auto;
+    min-height: 200px;
   }
   /* Allow table actions to wrap on very narrow screens */
   .table-actions {
@@ -1828,4 +1901,924 @@ body {
   .floating-agent-tooltip {
     display: none;
   }
+}
+
+/* ================================================================
+   LOG DRAWER
+   Right-side sliding panel — Datadog-style log inspection.
+   Opens on row click, closes via X / ESC / backdrop click.
+================================================================ */
+
+/* Active row highlight */
+.log-table tbody tr.log-row-active {
+  background-color: var(--accent-dim);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* Backdrop — dims the page behind the drawer */
+.ld-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--modal-overlay-bg);
+  z-index: 400;
+  animation: ldFadeIn 0.18s ease-out;
+}
+
+/* Drawer panel */
+.ld-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(560px, 100vw);
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  z-index: 500;
+  overflow: hidden;
+  animation: ldSlideIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  outline: none; /* focus ring suppressed — we manage focus manually */
+}
+
+@keyframes ldSlideIn {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+
+@keyframes ldFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ── Header ── */
+.ld-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.ld-header-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.ld-header-service {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.ld-header-endpoint {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+
+.ld-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.ld-header-ts {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.ld-close-btn {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s;
+}
+
+.ld-close-btn:hover {
+  background: var(--btn-hover-bg);
+  color: var(--text-primary);
+}
+
+/* Status badge */
+.ld-status-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 2px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.ld-status-2xx { background: var(--level-debug-bg);  color: var(--level-debug); }
+.ld-status-3xx { background: var(--level-info-bg);   color: var(--level-info);  }
+.ld-status-4xx { background: var(--level-warn-bg);   color: var(--level-warn);  }
+.ld-status-5xx { background: var(--level-error-bg);  color: var(--level-error); }
+
+/* Trace strip */
+.ld-trace-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.ld-trace-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.ld-trace-id {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Tabs ── */
+.ld-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.ld-tabs::-webkit-scrollbar { display: none; }
+
+.ld-tab {
+  padding: 8px 14px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 500;
+  font-family: var(--font-family);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.12s, border-color 0.12s;
+  margin-bottom: -1px; /* overlap the container border */
+}
+
+.ld-tab:hover {
+  color: var(--text-primary);
+}
+
+.ld-tab-active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+/* ── Body (scrollable content area) ── */
+.ld-body {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--surface);
+}
+
+/* ── Overview tab ── */
+.ld-overview {
+  display: flex;
+  flex-direction: column;
+}
+
+.ld-section {
+  padding: 14px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.ld-section:last-child {
+  border-bottom: none;
+}
+
+.ld-section-title {
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+
+/* Full message block */
+.ld-message-block {
+  font-size: 0.82rem;
+  line-height: 1.65;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 10px 12px;
+}
+
+/* Field rows */
+.ld-fields {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1px;
+  background: var(--border-subtle);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.ld-fields-wide {
+  /* metadata tab: same grid but slightly more breathing room */
+}
+
+.ld-field {
+  display: grid;
+  grid-template-columns: 120px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--surface);
+  min-width: 0;
+}
+
+.ld-field:hover {
+  background: var(--table-row-hover);
+}
+
+.ld-field-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ld-field-value {
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  word-break: break-all;
+  min-width: 0;
+}
+
+/* Stack trace / error details */
+.ld-stack-trace {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--level-error-bg);
+  border: 1px solid rgba(252, 68, 68, 0.2);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--level-error);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+/* ── JSON tab ── */
+.ld-json-tab,
+.ld-raw-tab {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.ld-json-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.ld-json-toolbar-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-dim);
+}
+
+.ld-copy-json-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  font-family: var(--font-family);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.ld-copy-json-btn:hover {
+  background: var(--btn-hover-bg);
+  color: var(--text-primary);
+}
+
+.ld-copy-json-btn.ld-copy-done {
+  color: var(--level-debug);
+  border-color: rgba(17, 171, 58, 0.3);
+  background: var(--level-debug-bg);
+}
+
+/* Inline copy button on field rows */
+.ld-copy-btn {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  color: var(--text-dim);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s, background 0.1s, color 0.1s;
+  flex-shrink: 0;
+}
+
+.ld-field:hover .ld-copy-btn,
+.ld-trace-strip:hover .ld-copy-btn {
+  opacity: 1;
+}
+
+.ld-copy-btn:hover {
+  background: var(--btn-hover-bg);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+
+.ld-copy-btn.ld-copy-done {
+  opacity: 1;
+  color: var(--level-debug);
+}
+
+/* JSON tree */
+.ld-json-tree {
+  padding: 14px;
+  font-size: 0.78rem;
+  line-height: 1.7;
+  color: var(--text-primary);
+  overflow-x: auto;
+}
+
+.ld-json-block {
+  display: block;
+  padding-left: 18px;
+  border-left: 1px solid var(--border-subtle);
+  margin-left: 4px;
+}
+
+.ld-json-line {
+  display: block;
+}
+
+.ld-json-key   { color: var(--accent); }
+.ld-json-str   { color: var(--level-debug); }
+.ld-json-num   { color: var(--level-warn); }
+.ld-json-bool  { color: var(--level-info); }
+.ld-json-null  { color: var(--text-dim); font-style: italic; }
+.ld-json-punct { color: var(--text-dim); }
+
+.ld-json-ellipsis {
+  color: var(--text-dim);
+  font-style: italic;
+  font-size: 0.72rem;
+}
+
+.ld-json-toggle {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 0.7rem;
+  padding: 0 3px 0 0;
+  line-height: 1;
+  font-family: var(--font-mono);
+  vertical-align: middle;
+  transition: color 0.1s;
+}
+
+.ld-json-toggle:hover {
+  color: var(--text-primary);
+}
+
+/* Raw pre */
+.ld-raw-pre {
+  padding: 14px;
+  font-size: 0.78rem;
+  line-height: 1.65;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+
+/* Metadata tab */
+.ld-metadata-tab {
+  padding: 14px;
+}
+
+.ld-empty {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  padding: 8px 0;
+}
+
+/* Shared mono utility */
+.ld-mono {
+  font-family: var(--font-mono);
+}
+
+/* ── Responsive ── */
+@media (max-width: 640px) {
+  .ld-drawer {
+    width: 100vw;
+    border-left: none;
+    border-top: 1px solid var(--border);
+    top: auto;
+    height: 85vh;
+    animation: ldSlideUp 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  @keyframes ldSlideUp {
+    from { transform: translateY(100%); }
+    to   { transform: translateY(0); }
+  }
+
+  .ld-field {
+    grid-template-columns: 100px 1fr auto;
+  }
+}
+
+/* ── Notification Settings page ─────────────────────────────────────────── */
+
+.ns-page {
+  max-width: 440px;
+  margin: 40px auto;
+  padding: 0 16px;
+  font-family: var(--font-family);
+}
+
+.ns-header {
+  margin-bottom: 28px;
+}
+
+.ns-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+  margin: 0 0 4px;
+}
+
+.ns-subtitle {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+/* ── Banner ── */
+.ns-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  font-size: 0.8rem;
+  margin-bottom: 16px;
+}
+
+.ns-banner-error {
+  background: var(--level-error-bg);
+  border-color: rgba(252, 68, 68, 0.25);
+  color: var(--level-error);
+}
+
+.ns-banner-success {
+  background: var(--level-debug-bg);
+  border-color: rgba(17, 171, 58, 0.25);
+  color: var(--level-debug);
+}
+
+.ns-banner-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.75rem;
+  color: inherit;
+  opacity: 0.7;
+  padding: 0;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.ns-banner-close:hover { opacity: 1; }
+
+/* ── Toggle row ── */
+.ns-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 20px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06), 0 0 0 0 transparent;
+  margin-bottom: 4px;
+}
+
+.ns-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.ns-row-label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ns-row-title {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.ns-row-desc {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+/* ── Toggle switch ── */
+/*
+  Track: 36×20px. Thumb: 14×14px, centered vertically at (20-14)/2 = 3px from top.
+  Off: thumb at left  → translateX(3px)
+  On:  thumb at right → translateX(36 - 14 - 3px) = translateX(19px)
+*/
+.ns-toggle {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  border: none;
+  background: var(--surface-strong);
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  transition: background 0.18s ease-out;
+}
+
+.ns-toggle-on {
+  background: var(--accent);
+}
+
+.ns-toggle-thumb {
+  position: absolute;
+  top: 3px;
+  left: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  transform: translateX(3px);
+  transition: transform 0.18s ease-out;
+  pointer-events: none;
+}
+
+.ns-toggle-on .ns-toggle-thumb {
+  transform: translateX(19px);
+}
+
+/* ── Actions ── */
+.ns-actions {
+  margin-top: 20px;
+}
+
+.ns-save-btn {
+  padding: 6px 18px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 3px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  font-family: var(--font-family);
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.ns-save-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ns-save-btn:not(:disabled):hover {
+  opacity: 0.88;
+}
+
+/* ── Loading ── */
+.ns-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 32px 0;
+  color: var(--text-secondary);
+}
+
+.ns-loading-text {
+  font-size: 0.8rem;
+}
+
+@keyframes ns-spin {
+  to { transform: rotate(360deg); }
+}
+
+.ns-spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: ns-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+/* ── Notification settings side panel ───────────────────────────────────── */
+
+/* Thin backdrop — just enough to catch outside clicks, not a full modal overlay */
+.ns-panel-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 140;
+}
+
+/* Panel anchored above the bottom-left profile button */
+.ns-panel {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  width: 280px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  z-index: 210;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  animation: fadeIn 0.15s ease-out;
+  overflow: hidden;
+}
+
+.ns-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ns-panel-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.ns-panel-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-dim);
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  transition: color 0.12s, background 0.12s;
+}
+
+.ns-panel-close:hover {
+  color: var(--text-primary);
+  background: var(--btn-hover-bg);
+}
+
+/* Content area inside the panel */
+.ns-body {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Override ns-page sizing — inside the panel it fills the panel width */
+.ns-loading {
+  padding: 16px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+}
+
+.ns-card {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.ns-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ns-row-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ns-row-title {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.ns-row-desc {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.ns-actions {
+  display: flex;
+}
+
+.ns-save-btn {
+  padding: 5px 14px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 3px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  font-family: var(--font-family);
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.ns-save-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ns-save-btn:not(:disabled):hover {
+  opacity: 0.85;
+}
+
+.ns-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  font-size: 0.75rem;
+}
+
+.ns-banner-error {
+  background: var(--level-error-bg);
+  border-color: rgba(252, 68, 68, 0.25);
+  color: var(--level-error);
+}
+
+.ns-banner-success {
+  background: var(--level-debug-bg);
+  border-color: rgba(17, 171, 58, 0.25);
+  color: var(--level-debug);
+}
+
+.ns-banner-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.72rem;
+  color: inherit;
+  opacity: 0.7;
+  padding: 0;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.ns-banner-close:hover { opacity: 1; }
+
+/* Toggle — 36×20 track, 14×14 thumb */
+.ns-toggle {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  border: none;
+  background: var(--surface-strong);
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  transition: background 0.18s ease-out;
+}
+
+.ns-toggle-on {
+  background: var(--accent);
+}
+
+.ns-toggle-thumb {
+  position: absolute;
+  top: 3px;
+  left: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  transform: translateX(3px);
+  transition: transform 0.18s ease-out;
+  pointer-events: none;
+}
+
+.ns-toggle-on .ns-toggle-thumb {
+  transform: translateX(19px);
+}
+
+.ns-loading-text {
+  font-size: 0.78rem;
+}
+
+@keyframes ns-spin {
+  to { transform: rotate(360deg); }
+}
+
+.ns-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: ns-spin 0.7s linear infinite;
+  flex-shrink: 0;
 }

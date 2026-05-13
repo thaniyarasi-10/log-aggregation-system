@@ -471,9 +471,6 @@ public class AdminManagementController {
         List<UserRoleMapping> mappings = normalizedRoleNames.stream()
                 .map(roleName -> {
                 AppRole role = appRoleRepository.findByNameIgnoreCase(roleName)
-                    .or(() -> "DEV".equalsIgnoreCase(roleName)
-                        ? appRoleRepository.findByNameIgnoreCase("DEVELOPER")
-                        : java.util.Optional.empty())
                     .orElseThrow(() -> new ResponseStatusException(
                         HttpStatus.BAD_REQUEST,
                         "Unknown role: " + roleName));
@@ -544,11 +541,7 @@ public class AdminManagementController {
         if (roleName == null) {
             return "";
         }
-        String normalized = roleName.trim().toUpperCase(Locale.ROOT);
-        if ("DEVELOPER".equals(normalized)) {
-            return "DEV";
-        }
-        return normalized;
+        return roleName.trim().toUpperCase(Locale.ROOT);
     }
 
     private void syncUserServices(AppUser user, List<String> serviceNames) {

@@ -21,7 +21,10 @@ public class LogEvent {
     private String endpoint;
     private String method;
     private Integer statusCode;
-    private Integer responseTime;
+    // Double instead of Integer: Filebeat/application logs may send fractional values
+    // (e.g. "responseTime": 341.65). Using Integer caused Jackson deserialization failures
+    // when reading documents back from ES, causing those hits to be silently dropped.
+    private Double responseTime;
     private String errorCode;
     private String errorDetails;
     private Object tags;
@@ -64,8 +67,8 @@ public class LogEvent {
     public Integer getStatusCode() { return statusCode; }
     public void setStatusCode(Integer statusCode) { this.statusCode = statusCode; }
 
-    public Integer getResponseTime() { return responseTime; }
-    public void setResponseTime(Integer responseTime) { this.responseTime = responseTime; }
+    public Double getResponseTime() { return responseTime; }
+    public void setResponseTime(Double responseTime) { this.responseTime = responseTime; }
 
     public String getErrorCode() { return errorCode; }
     public void setErrorCode(String errorCode) { this.errorCode = errorCode; }

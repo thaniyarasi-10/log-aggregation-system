@@ -9,7 +9,7 @@ summary.py  —  PRESENTATION / PDF LAYER
 Responsibilities:
   • Render the enhanced PDF report from a structured analytics dict
   • All styling, layout, charts, tables, KPI cards, recommendation cards
-  • Role-based column selection (admin vs developer)
+  • Role-based column selection (admin vs dev)
 
 This module does NOT fetch logs or compute analytics.
 All analytics are computed by role_agent.py (the data layer) and passed in
@@ -22,7 +22,7 @@ Role behaviour
           Columns: Service | Errors | Warnings | Req Approved | Req Rejected | Users Added
           All columns always rendered; shows 0 when no requests/users.
 
-  dev   : Only developer-mapped services visible.
+  dev   : Only dev-mapped services visible.
           Columns: Service | Errors | Warnings | Service Requests | P99 Latency (ms)
           All columns always rendered; shows 0 / "—" when no data.
 
@@ -640,7 +640,7 @@ def generate_pdf_report(data: dict, role: str = "admin") -> str:
 
     # ══ 2. SERVICES
     access_note = ("(All Services — Admin Access)" if role == "admin"
-                   else "(Mapped Services — Developer Access)")
+                   else "(Mapped Services — DEV Access)")
     els += _section_header(f"Services  {access_note}", S)
 
     if role == "admin":

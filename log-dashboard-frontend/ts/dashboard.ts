@@ -418,7 +418,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const buildRoleOptions = (): string[] => {
-        const defaults = ['ADMIN', 'USER', 'DEVELOPER'];
+        const defaults = ['ADMIN', 'DEV'];
         const discoveredRoles = currentAdminUsers
             .flatMap(user => user.roles)
             .map(role => role.trim())

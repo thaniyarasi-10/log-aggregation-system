@@ -28,13 +28,20 @@ public class LogParser {
 
             LOGGER.debug("RAW KAFKA JSON keys: {}", log.keySet());
 
-            // Handle nested JSON in the message field (e.g. logstash-style wrapping)
+            // Handle nested JSON in the message field (e.g. logstash-style wrapping).
+            // IMPORTANT: only merge keys that are NOT already present in the outer map.
+            // log.putAll(inner) would overwrite the Filebeat @timestamp and service fields
+            // with stale application-level values, causing index date mismatches and
+            // service resolution failures.
             Object msg = log.get("message");
             if (msg instanceof String && ((String) msg).startsWith("{")) {
                 try {
                     @SuppressWarnings("unchecked")
                     Map<String, Object> inner = mapper.readValue((String) msg, Map.class);
-                    log.putAll(inner);
+                    // Only add keys absent from the outer map — never overwrite Filebeat fields
+                    for (Map.Entry<String, Object> entry : inner.entrySet()) {
+                        log.putIfAbsent(entry.getKey(), entry.getValue());
+                    }
                 } catch (Exception ignored) {
                     // Keep original message when nested parsing fails.
                 }
@@ -53,9 +60,13 @@ public class LogParser {
 
             // ── level ─────────────────────────────────────────────────────────────────
             // Filebeat wraps the log level inside a nested "log" object: {"log":{"level":"info"}}
+            // Always normalize to uppercase so ES keyword queries ("INFO", "ERROR") match consistently.
             String level = firstString(log, "level", "severity", "logLevel");
             if (level == null || level.isBlank()) {
                 level = nestedString(log, "log", "level");
+            }
+            if (level != null) {
+                level = level.trim().toUpperCase(java.util.Locale.ROOT);
             }
             event.setLevel(level);
 
@@ -78,7 +89,7 @@ public class LogParser {
             event.setEndpoint(firstString(log, "endpoint", "path", "url"));
             event.setMethod(firstString(log, "method", "httpMethod"));
             event.setStatusCode(asInteger(firstValue(log, "statusCode", "status", "httpStatus")));
-            event.setResponseTime(asInteger(firstValue(log, "responseTime", "latency", "durationMs")));
+            event.setResponseTime(asDouble(firstValue(log, "responseTime", "latency", "durationMs")));
             event.setErrorCode(firstString(log, "errorCode", "code"));
             event.setErrorDetails(firstString(log, "errorDetails", "stack", "exception"));
             event.setTags(log.get("tags"));
@@ -111,19 +122,17 @@ public class LogParser {
 
     // ── Service resolution ────────────────────────────────────────────────────────
     //
-    // Filebeat-enriched payloads carry the originating service name in several
-    // possible locations depending on how the pipeline is configured:
+    // Priority order (highest → lowest):
     //
-    //   1. fields.service          — explicit custom field set in filebeat.yml
-    //   2. fields.app              — alternative custom field
-    //   3. agent.name              — Filebeat agent name (often the service name)
-    //   4. log.logger              — logger name (e.g. "com.example.OrderService")
-    //   5. service.name            — ECS service.name field
-    //   6. Flat top-level keys     — service, serviceName, project, app, application
-    //   7. host.name               — last resort: use the host as the service identifier
+    //   1. fields.service / fields.app  — explicit custom field in filebeat.yml (most reliable)
+    //   2. Flat top-level keys          — service, serviceName, project, app, application
+    //   3. ECS service.name             — standard ECS field
+    //   4. log.logger                   — Java logger name, strip package prefix
+    //   5. host.name                    — hostname as last meaningful fallback
+    //   6. agent.name                   — LAST RESORT: almost always "filebeat", not the service
     //
-    // The caller (LogProcessingService.isServiceApproved) normalises the value to
-    // lowercase before the DB lookup, so case differences are not a concern here.
+    // NOTE: agent.name was previously at position 3, causing ALL services without
+    // fields.service to resolve to "filebeat" → not in DB → silent drop.
     @SuppressWarnings("unchecked")
     private String resolveService(Map<String, Object> log) {
         // 1. fields.service / fields.app — highest priority custom field
@@ -142,9 +151,9 @@ public class LogParser {
                 "app", "app_name", "application");
         if (flat != null && !flat.isBlank()) return flat;
 
-        // 3. agent.name
-        String agentName = nestedString(log, "agent", "name");
-        if (agentName != null && !agentName.isBlank()) return agentName;
+        // 3. ECS service.name
+        String ecsService = nestedString(log, "service", "name");
+        if (ecsService != null && !ecsService.isBlank()) return ecsService;
 
         // 4. log.logger — strip package prefix to get the short class/service name
         String loggerName = nestedString(log, "log", "logger");
@@ -155,13 +164,17 @@ public class LogParser {
             return parts[parts.length - 1];
         }
 
-        // 5. ECS service.name
-        String ecsService = nestedString(log, "service", "name");
-        if (ecsService != null && !ecsService.isBlank()) return ecsService;
-
-        // 6. host.name — last resort
+        // 5. host.name
         String hostName = nestedString(log, "host", "name");
         if (hostName != null && !hostName.isBlank()) return hostName;
+
+        // 6. agent.name — LAST RESORT (usually "filebeat", not the service name)
+        String agentName = nestedString(log, "agent", "name");
+        if (agentName != null && !agentName.isBlank()
+                && !"filebeat".equalsIgnoreCase(agentName)
+                && !"metricbeat".equalsIgnoreCase(agentName)) {
+            return agentName;
+        }
 
         return null; // caller sets "unknown"
     }
@@ -212,6 +225,16 @@ public class LogParser {
         if (value instanceof Number number) return number.intValue();
         try {
             return Integer.parseInt(value.toString());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private Double asDouble(Object value) {
+        if (value == null) return null;
+        if (value instanceof Number number) return number.doubleValue();
+        try {
+            return Double.parseDouble(value.toString());
         } catch (NumberFormatException e) {
             return null;
         }

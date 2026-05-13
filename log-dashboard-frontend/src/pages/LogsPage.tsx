@@ -4,6 +4,7 @@ import MetricsCards from '../components/MetricsCards';
 import MetricsCharts from '../components/MetricsCharts';
 import SidebarFilters from '../components/SidebarFilters';
 import { useRealtimeLogs } from '../hooks/useRealtimeLogs';
+import { useAuth } from '../context/AuthContext';
 import { apiService } from '../services/api';
 import type { LogEvent, LogFilters, MetricsResponse } from '../types';
 
@@ -26,18 +27,28 @@ const emptyMetrics: MetricsResponse = {
 };
 
 export default function LogsPage() {
+  const { isAdmin, user } = useAuth();
   const [filters, setFilters] = useState<LogFilters>(defaultFilters);
   const [serviceOptions, setServiceOptions] = useState<string[]>([]);
   const [metrics, setMetrics] = useState<MetricsResponse>(emptyMetrics);
 
   const lastStableMetricsRef = useRef<MetricsResponse | null>(null);
 
+  // Derive the user's allowed services from the auth context.
+  // These are passed to useRealtimeLogs for the client-side RBAC guard.
+  const allowedServices = useMemo(
+    () => Array.isArray(user?.allowedServices) ? user.allowedServices : [],
+    [user?.allowedServices]
+  );
+
   // Metrics only depend on service + timeRange — level and search are intentionally excluded.
   // This key drives the metrics fetch effect so it only re-runs when the relevant filters change.
   const metricsKey = `${filters.service}|${filters.timeRange}`;
 
-  // Logs react to all filters (service, timeRange, level, search)
-  const { logs, loading, error } = useRealtimeLogs(filters, true, 5000);
+  // Logs react to all filters (service, timeRange, level, search).
+  // allowedServices and isAdmin are passed so the hook can enforce the RBAC
+  // service guard on incoming WebSocket messages as a second line of defence.
+  const { logs, loading, error } = useRealtimeLogs(filters, true, 5000, allowedServices, isAdmin);
 
   // Load the service dropdown once on mount.
   // The backend /logs/services endpoint already scopes the list to the user's allowed services,
@@ -130,23 +141,30 @@ export default function LogsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [metricsKey]); // only re-run when service or timeRange changes
 
-  // Sort logs for the table — this is purely presentational and does not affect metrics
+  // Sort logs for the table — newest first. Purely presentational; does not affect metrics.
+  // Capped at 500 entries to keep the DOM lean while still showing a deep history.
+  const MAX_DISPLAY_LOGS = 500;
   const sortedLogs = useMemo(() => {
-    return [...logs].sort(
+    const sorted = [...logs].sort(
       (a, b) =>
         new Date(b["@timestamp"] ?? 0).getTime() - new Date(a["@timestamp"] ?? 0).getTime()
     );
+    return sorted.slice(0, MAX_DISPLAY_LOGS);
   }, [logs]);
 
   return (
     <section className="dashboard-grid">
       <SidebarFilters filters={filters} services={serviceOptions} onChange={setFilters} />
       <section className="dashboard-main">
-        {/* Metrics and charts use API-sourced data scoped to service + timeRange only */}
-        <MetricsCards metrics={metrics} />
-        <MetricsCharts metrics={metrics} />
-        {/* Log table reacts to all filters including level and search */}
-        <LogsTable logs={sortedLogs as LogEvent[]} loading={loading} error={error} searchTerm={filters.search} />
+        {/* Analytics zone: fixed-height band — cards + charts */}
+        <div className="dashboard-analytics">
+          <MetricsCards metrics={metrics} />
+          <MetricsCharts metrics={metrics} />
+        </div>
+        {/* Logs zone: fills all remaining viewport height */}
+        <div className="dashboard-logs">
+          <LogsTable logs={sortedLogs as LogEvent[]} loading={loading} error={error} searchTerm={filters.search} />
+        </div>
       </section>
     </section>
   );
